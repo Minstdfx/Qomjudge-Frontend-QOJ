@@ -561,6 +561,12 @@ def create_app(contest_id=1802, demo=False, duration_minutes=None, data_dir=None
         session.clear()
         return rebound_state()
 
+    @app.post("/api/team/dissolve")
+    def dissolve_team():
+        payload()
+        teams.dissolve(session["sid"], contest_key)
+        return rebound_state()
+
     @app.post("/api/refresh")
     def refresh():
         with g.runtime["client"].lock:
@@ -625,6 +631,10 @@ def create_app(contest_id=1802, demo=False, duration_minutes=None, data_dir=None
                 selection = body.get("selection") or {}
                 if not isinstance(selection, dict):
                     raise AppError("请选择有效的 QOJ 参赛选项。")
+                # A new explicit attempt replaces any notice from an older one.
+                # A rejected POST must not keep masquerading as an earlier
+                # request that may have succeeded.
+                g.runtime.pop("entry_notice", None)
                 try:
                     entered = g.runtime["client"].enter(contest_id, selected,
                                                         selection={"action": body.get("action"), "values": selection})
@@ -635,7 +645,15 @@ def create_app(contest_id=1802, demo=False, duration_minutes=None, data_dir=None
                     # A failed/uncertain POST may still have reached QOJ. Never
                     # retry or manufacture a local success; refresh on next GET.
                     invalidate_native()
-                return jsonify(state())
+                updated = state()
+                participant = updated.get("participation", {})
+                if (entered and entered.get("entry_pending") and participant.get("entry_stage") == "confirmation"
+                        and participant.get("actions")):
+                    return jsonify(updated)
+                if participant.get("status") not in {"scheduled", "running", "finished"}:
+                    message = participant.get("message") or "QOJ 尚未确认开始参赛，请刷新状态核查。"
+                    return jsonify(error=message, state=updated), 409
+                return jsonify(updated)
             contest = require_contest()
             if not g.runtime["client"].authenticated:
                 raise AppError("请先连接 QOJ 账号。", 401)

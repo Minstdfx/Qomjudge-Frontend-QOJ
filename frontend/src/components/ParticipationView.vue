@@ -12,6 +12,8 @@ const demoStarting = ref(false);
 const teamName = ref('My Team');
 const teamNameInput = ref(null);
 const mode = computed(() => c.part?.mode === 'official' ? 'official' : 'vp');
+const confirmationStage = computed(() => mode.value === 'vp' && c.part?.status === 'unregistered'
+  && c.part?.entry_stage === 'confirmation');
 const actions = computed(() => (Array.isArray(c.part?.actions) ? c.part.actions : [])
   .filter((action) => action && ['string', 'number'].includes(typeof action.id)));
 const action = computed(() => actions.value.find((item) => String(item.id) === selectedAction.value) || actions.value[0]);
@@ -39,11 +41,13 @@ watch(() => JSON.stringify([mode.value, actions.value.map((item) => [String(item
   }
 }, { immediate: true });
 // Schema/context changes reset defaults; polling an unchanged form preserves edits.
-watch(() => JSON.stringify([c.context, mode.value, action.value?.id, fields.value]), () => {
+watch(() => JSON.stringify([c.context, mode.value, confirmationStage.value, action.value?.id, fields.value]), () => {
   const values = Object.create(null);
   for (const field of fields.value) {
     const initial = field.default ?? field.value ?? '';
-    values[field.name] = field.type === 'checkbox' ? initial === true : String(initial);
+    // A second-step VP declaration requires an explicit choice on this page,
+    // even when the upstream markup supplied a checked/default value.
+    values[field.name] = field.type === 'checkbox' ? !confirmationStage.value && initial === true : String(initial);
   }
   fieldValues.value = values;
 }, { immediate: true });
@@ -53,6 +57,7 @@ const modeHelp = computed(() => c.state?.demo ? '当前为离线演示，使用�
     : '参赛模式和 QOJ 注册、开始操作由队长电脑管理。');
 const statusTitle = computed(() => {
   if (c.participationChanging) return '正在更新参赛状态…';
+  if (confirmationStage.value) return '确认 QOJ VP 报名';
   return ({
     unregistered: mode.value === 'official' ? '尚未注册正式比赛' : '尚未开始 QOJ VP',
     scheduled: '已安排参赛，等待开赛', running: '比赛正在进行',
@@ -61,6 +66,9 @@ const statusTitle = computed(() => {
 });
 const statusMessage = computed(() => c.state && !c.hasTeam ? '请先在 Team 创建队伍，或使用队长提供的邀请码加入队伍。完成组队并确认开赛后显示比赛内容。'
   : c.participationChanging ? '请稍候，正在与 QOJ 同步。'
+  : confirmationStage.value ? c.can('manage')
+    ? c.part?.message || '请阅读并确认下方 QOJ 报名选项；完成确认前不会开始比赛。'
+    : '队长正在确认 QOJ VP 报名；完成并确认开赛后才会显示比赛内容。'
   : c.part?.message || (!c.can('manage') ? '请等待队长完成参赛操作；开赛后会自动显示比赛内容。'
     : c.part?.status === 'scheduled' ? '到达 QOJ 安排的开赛时间并确认已开赛后，比赛内容将自动开放。'
       : c.canRead ? '可以进入比赛查看题面和成绩。' : '连接 QOJ 账号后，使用此处提供的参赛操作。'));

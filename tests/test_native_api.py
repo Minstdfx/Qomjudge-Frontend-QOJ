@@ -429,8 +429,9 @@ class NativeAPITests(unittest.TestCase):
 
         self.upstream.enter = uncertain_enter
         response = self.post("/api/start", {"mode": "vp", "action": "enter-vp"})
-        self.assertEqual(response.status_code, 200)
-        for state in (response.get_json(), self.state()):
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("sent once", response.get_json()["error"])
+        for state in (response.get_json()["state"], self.state()):
             self.assert_hidden(state)
             self.assertTrue(state["participation"]["entry_uncertain"])
             self.assertIn("sent once", state["participation"]["message"])

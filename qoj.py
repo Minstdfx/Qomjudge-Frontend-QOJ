@@ -6,8 +6,9 @@ No submission POST is retried, including after an uncertain network result.
 
 from __future__ import annotations
 
-import html
+import copy
 import hashlib
+import html
 import json
 import math
 import re
@@ -445,19 +446,46 @@ def parse_verdict(source: str, qoj_id: int) -> dict:
     return {"verdict": "UNKNOWN", "message": text or "QOJ 尚未公布可识别结果。", **metrics}
 
 
+class QOJCookieJar(requests.cookies.RequestsCookieJar):
+    """Keep one QOJ cookie per name/path when the upstream renews a session.
+
+    Cookie request headers do not carry their original Domain attribute. QOJ
+    uses .qoj.ac, while imported and host-only cookies otherwise use qoj.ac.
+    Treat these as one scope in this client, which only permits qoj.ac requests.
+    This also makes expiry remove an imported value instead of reviving it.
+    """
+    @staticmethod
+    def _domain(domain):
+        return ".qoj.ac" if domain and domain.lstrip(".").lower() == "qoj.ac" else domain
+
+    def set_cookie(self, cookie, *args, **kwargs):
+        if self._domain(cookie.domain) == ".qoj.ac":
+            cookie = copy.copy(cookie)
+            cookie.domain = ".qoj.ac"
+            cookie.domain_specified = True
+            cookie.domain_initial_dot = True
+        return super().set_cookie(cookie, *args, **kwargs)
+
+    def clear(self, domain=None, path=None, name=None):
+        return super().clear(self._domain(domain), path, name)
+
+
 class QOJClient:
     def __init__(self):
         self.session = requests.Session()
+        self.session.cookies = QOJCookieJar()
         self.lock = threading.RLock()
         self.authenticated = False
         self.username = ""
         self._cooldown_until = 0.0
+        self._vp_entry_pages = {}
 
     def clear(self):
         with self.lock:
             self.session.cookies.clear()
             self.authenticated = False
             self.username = ""
+            self._vp_entry_pages.clear()
 
     def import_cookies(self, cookie_header: str):
         if not isinstance(cookie_header, str) or len(cookie_header) > 32768 or any(ord(c) < 32 for c in cookie_header):
@@ -569,8 +597,8 @@ class QOJClient:
                 return response
         raise QOJError("QOJ 页面重定向次数过多。", 502)
 
-    def _page(self, path: str) -> requests.Response:
-        response = self.fetch("GET", path)
+    def _page(self, path: str, **kwargs) -> requests.Response:
+        response = self.fetch("GET", path, **kwargs)
         self._observe_page(response)
         return response
 

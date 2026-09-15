@@ -246,7 +246,7 @@ class ClientTransportTests(unittest.TestCase):
         self.client.import_cookies("Cookie: session=fixture; preference=en")
         cookies = list(self.client.session.cookies)
         self.assertEqual({c.name for c in cookies}, {"session", "preference"})
-        self.assertTrue(all(c.domain == "qoj.ac" and c.secure and c.path == "/" for c in cookies))
+        self.assertTrue(all(c.domain == ".qoj.ac" and c.secure and c.path == "/" for c in cookies))
         self.client.authenticated, self.client.username = True, "fixture-user"
         self.client.clear()
         self.assertFalse(list(self.client.session.cookies))

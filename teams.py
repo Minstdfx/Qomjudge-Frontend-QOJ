@@ -160,6 +160,22 @@ class TeamStore:
                        (time.time(), existing["device_id"]))
             return self._access(db, sid, contest_key)
 
+    def dissolve(self, captain_sid: str, contest_key: str):
+        """Detach all devices and invalidate credentials without deleting VP data."""
+        with self.connect(immediate=True) as db:
+            existing = self._access(db, captain_sid, contest_key, touch=False)
+            if existing is None or existing["role"] != "captain" or existing["owner_sid"] != captain_sid:
+                raise TeamError("只有当前队长可以解散队伍。", 403)
+            identity = (existing["id"], contest_key)
+            # TeamStore also works independently, before optional CLI support
+            # has initialized its table. Remove the FK dependent credentials
+            # first when present, in the same transaction as team deletion.
+            has_cli = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='cli_tokens'").fetchone()
+            if has_cli:
+                db.execute("DELETE FROM cli_tokens WHERE team_id=? AND contest_key=?", identity)
+            db.execute("DELETE FROM team_devices WHERE team_id=? AND contest_key=?", identity)
+            db.execute("DELETE FROM teams WHERE id=? AND contest_key=?", identity)
+
     def revoke(self, owner_sid: str, contest_key: str, device_id: str):
         if not isinstance(device_id, str) or len(device_id) != 32 or any(char not in "0123456789abcdef" for char in device_id):
             raise TeamError("设备编号无效。")

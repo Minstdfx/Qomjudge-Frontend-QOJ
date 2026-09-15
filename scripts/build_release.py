@@ -93,6 +93,13 @@ def main():
 此包包含后端源码、Vue 源码、已编译前端、文档及离线测试。
 不包含运行数据、账号凭据、日志、截图、虚拟环境或 node_modules。
 
+## 本版更新
+
+- 修复 VP 的两步报名：Start 跳到 `/contest/ID/virtual/register` 后，在 Contest 显示上游确认表单；用户再次确认才提交 `register_vp` 并核查开赛时间。刷新不会跳回第一步或自动提交，旧版单步 VP 和正式比赛仍受支持。
+- 修复导入 Cookie 与 QOJ 更新 Cookie 的域写法不同而重复发送旧会话的问题；更新和过期删除按名称、路径正确生效。
+
+升级后请重启 Python 后端并重新连接 QOJ。对于两步 VP，点击 Start 后还需在本页确认报名；此时比赛内容保持关闭。已有 QOJ VP 可刷新恢复。包含队伍解散、终端提交和虚拟打印等已有功能。
+
 ## 启动
 
 需要 Python 3.10+，先安装 requirements.txt 中的依赖。直接运行不需要 Node.js。
@@ -115,7 +122,7 @@ python app.py --contest 1802 --mode vp --host 0.0.0.0 --port 8080
 
 ## 终端提交与虚拟打印
 
-本版新增 `cli/submit` 和 `cli/printfile`（Windows 使用同名 `.cmd`）。客户端仅需 Python 3.10+，可把整个 cli 目录复制到队长电脑。
+包含 `cli/submit` 和 `cli/printfile`（Windows 使用同名 `.cmd`）。客户端仅需 Python 3.10+，可把整个 cli 目录复制到队长电脑。
 在队长网页 Team → 命令行工具生成并下载 qoj-cli.json，开始参赛后可运行：
 
 ```sh

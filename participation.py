@@ -194,11 +194,76 @@ def _label(soup, element):
     return (node.get_text(" ", strip=True) if node else element.get("aria-label") or element.get("name") or "选项")[:1000]
 
 
+def _vp_registration_url(value, contest_id, base_url="https://qoj.ac/"):
+    try:
+        target = _upstream_url(value, base_url)
+    except QOJError:
+        return None
+    if urlsplit(target).path.rstrip("/") == f"/contest/{int(contest_id)}/virtual/register":
+        return target
+    return None
+
+
+def _entry_url_allowed(value, contest_id, mode):
+    """Do not follow entry redirects to another contest, mode or operation."""
+    try:
+        path = urlsplit(_upstream_url(value)).path.rstrip("/")
+    except QOJError:
+        return False
+    allowed = {f"/contest/{contest_id}", f"/contest/{contest_id}/standings",
+               "/login", "/login/2fa", "/login-2fa", "/two-factor-auth"}
+    if mode == "vp":
+        allowed.add(f"/contest/{contest_id}/virtual/register")
+    else:
+        allowed.update({f"/contest/{contest_id}/register", f"/contest/{contest_id}/registration"})
+    return path in allowed
+
+
+def _remember_vp_registration(client, contest_id, url):
+    """Retain only an observed page URL, never a token or a confirmation value."""
+    target = _vp_registration_url(url, contest_id)
+    if not target or not client.username:
+        return
+    pages = getattr(client, "_vp_entry_pages", None)
+    if pages is None:
+        pages = client._vp_entry_pages = {}
+    key = (int(contest_id), client.username)
+    pages.pop(key, None)
+    while len(pages) >= 32:
+        pages.pop(next(iter(pages)))
+    pages[key] = target
+
+
+def _vp_registration_link(soup, contest_id, page_url):
+    for link in soup.select("a[href]"):
+        if link.find_parent(["article", "form"]) or link.find_parent(class_="uoj-article"):
+            continue
+        if target := _vp_registration_url(link["href"], contest_id, page_url):
+            return target
+    return None
+
+
+def _read_vp_registration(client, contest_id, url, expected_username):
+    page = client._page(url, url_guard=lambda target: _entry_url_allowed(target, contest_id, "vp"))
+    _ensure_account(client, expected_username)
+    if urlsplit(page.url).path.rstrip("/") == f"/contest/{int(contest_id)}":
+        # QOJ can expire this step or send an already registered user home.
+        # Drop the old URL so future refreshes can resume from that page.
+        getattr(client, "_vp_entry_pages", {}).pop((int(contest_id), expected_username), None)
+        return page
+    if not _vp_registration_url(page.url, contest_id):
+        raise QOJError("QOJ VP 报名页面已变化，请刷新参赛状态。", 409)
+    return page
+
+
 def native_forms(source, contest_id, page_url, mode):
     """Return private form descriptors. Hidden fields never leave this module."""
     soup = BeautifulSoup(source, "html.parser")
     result = []
     accepted = {"regvir", "register-virtual", "register_virtual", "virtual-register"} if mode == "vp" else {"register", "registration", "reg", "register-contest"}
+    confirmation = mode == "vp" and bool(_vp_registration_url(page_url, contest_id))
+    if confirmation:
+        accepted |= {"register_vp", "register-vp", "register", "registration", "confirm"}
     for form in soup.select("form"):
         form_name = re.sub(r"^form-", "", form.get("id", ""))
         buttons = form.select('button[name], input[type="submit"][name]')
@@ -213,7 +278,12 @@ def native_forms(source, contest_id, page_url, mode):
             action_url = _upstream_url(form.get("action") or page_url, page_url)
         except QOJError:
             continue
-        if urlsplit(action_url).path not in (f"/contest/{contest_id}", f"/contest/{contest_id}/register", f"/contest/{contest_id}/registration", f"/contest/{contest_id}/standings"):
+        paths = {f"/contest/{contest_id}", f"/contest/{contest_id}/standings"}
+        if confirmation:
+            paths = {f"/contest/{contest_id}/virtual/register"}
+        elif mode == "official":
+            paths.update({f"/contest/{contest_id}/register", f"/contest/{contest_id}/registration"})
+        if urlsplit(action_url).path.rstrip("/") not in paths:
             continue
         hidden = {}
         valid = True
@@ -273,8 +343,10 @@ def native_forms(source, contest_id, page_url, mode):
         if not valid:
             continue
         identifier = form_name or re.sub(r"^submit-", "", button["name"])
+        if confirmation:
+            identifier = "virtual-register:" + identifier
         descriptor = {"id": identifier, "label": button.get_text(" ", strip=True) or button.get("value") or ("开始 QOJ VP" if mode == "vp" else "报名 QOJ 比赛"),
-                      "kind": "start" if mode == "vp" else "register", "fields": fields}
+                      "kind": "start" if mode == "vp" and not confirmation else "register", "fields": fields}
         result.append({"public": descriptor, "url": action_url, "hidden": hidden,
                        "submit_name": button["name"], "submit_value": button.get("value", ""), "page_url": page_url})
     return result
@@ -313,15 +385,15 @@ def form_payload(form, values):
     return payload
 
 
-def registrant_record(source, username):
-    """Read QOJ's own Start Time + Duration and its separate virtual-user list.
+def _registrant_observation(source, username):
+    """Read one page without treating absence from a page as non-VP status.
 
     Current QOJ's first table has #,Username,Rating,Start Time,Duration; the
     virtual table has #,Username,Start Time. This is observed public markup,
     not an inference from whether someone submitted after the official round.
     """
     if not username:
-        return None
+        return None, False, False
     soup = BeautifulSoup(source, "html.parser")
     record, virtual = None, False
     virtual_table_seen = False
@@ -356,9 +428,114 @@ def registrant_record(source, username):
                 if match and float(match[1]) > 0:
                     duration = float(match[1]) * 60
                     record = {"started_at": started, "ends_at": started + duration, "duration_seconds": duration}
+    return record, virtual, virtual_table_seen
+
+
+def registrant_record(source, username):
+    """Parse a complete registration listing already supplied by the caller."""
+    record, virtual, virtual_table_seen = _registrant_observation(source, username)
     if record:
         record["is_virtual"] = virtual if virtual_table_seen else None
     return record
+
+
+MAX_REGISTRANT_PAGES = 64
+
+
+def _registrant_page_url(value, contest_id, base_url):
+    """Only QOJ's advertised pagination for this exact registration listing."""
+    try:
+        target = _upstream_url(value, base_url)
+    except QOJError:
+        return None
+    parts = urlsplit(target)
+    if parts.path != f"/contest/{contest_id}/registrants" or parts.fragment:
+        return None
+    query = parse_qsl(parts.query, keep_blank_values=True)
+    base = "https://qoj.ac" + parts.path
+    if not query:
+        return base
+    if (len(query) != 1 or query[0][0] != "page" or not re.fullmatch(r"[0-9]{1,6}", query[0][1])
+            or int(query[0][1]) < 1):
+        return None
+    number = int(query[0][1])
+    return base if number == 1 else f"{base}?page={number}"
+
+
+def read_registrant_record(client, contest_id, listing_url, username):
+    """Join the current account's timed row and VP identity across QOJ pages.
+
+    QOJ 1802's two tables share ``?page=N`` while ordering their rows
+    differently: a VP user's identity can be on page 1 and their Start Time /
+    Duration on page 3. Fetch only advertised same-contest pages, stop on
+    positive evidence, and retain only matching page URLs as future hints.
+    Identity, times and membership are freshly read on every call.
+    """
+    if not username:
+        return None
+    base = _registrant_page_url(listing_url, contest_id, listing_url)
+    if not base:
+        raise QOJError("QOJ 未提供当前比赛的有效参赛名单地址。", 502)
+    hints = getattr(client, "_registrant_page_hints", {})
+    if not isinstance(hints, dict):
+        hints = {}
+    key = (contest_id, username)
+    queue = []
+    for value in (*hints.get(key, ()), base):
+        target = _registrant_page_url(value, contest_id, base)
+        if target and target not in queue:
+            queue.append(target)
+    seen, matched_pages = set(), []
+    record, virtual, virtual_table_seen = None, False, False
+
+    def resolved():
+        if record is None:
+            return None
+        # Cache only URLs that supplied this account's own rows. A later
+        # refresh verifies those rows again and follows links if they moved.
+        if key not in hints and len(hints) >= 32:
+            hints.pop(next(iter(hints)))
+        hints[key] = tuple(matched_pages)
+        client._registrant_page_hints = hints
+        return {**record, "is_virtual": virtual if virtual_table_seen else None}
+
+    while queue:
+        if len(seen) >= MAX_REGISTRANT_PAGES:
+            raise QOJError("QOJ 参赛名单分页较多，尚未完整确认当前账号的参赛时间与类型；请在 QOJ 核查。", 502)
+        target = queue.pop(0)
+        if target in seen:
+            continue
+        seen.add(target)
+        page = client._page(target)
+        _ensure_account(client, username)
+        actual = _registrant_page_url(page.url, contest_id, base)
+        if not actual:
+            raise QOJError("QOJ 参赛名单重定向到了不同的比赛或页面。", 502)
+        observed, is_virtual, has_virtual_table = _registrant_observation(page.text, username)
+        if observed:
+            if record is not None and observed != record:
+                raise QOJError("QOJ 在读取分页名单时返回了不同的个人参赛时间，请刷新后重试。", 409)
+            record = observed
+        virtual |= is_virtual
+        virtual_table_seen |= has_virtual_table
+        if (observed or is_virtual) and actual not in matched_pages:
+            matched_pages.append(actual)
+        if record and virtual:
+            return resolved()
+        soup = BeautifulSoup(page.text, "html.parser")
+        discovered = set()
+        for link in soup.select(".pagination a[href]"):
+            if link.find_parent("form") or link.find_parent(class_="disabled"):
+                continue
+            next_page = _registrant_page_url(link["href"], contest_id, page.url)
+            if next_page and next_page not in seen and next_page not in queue:
+                discovered.add(next_page)
+        # Recent VP users are commonly near the end of the main table, while
+        # the VP table puts recent users first. Try the advertised end first.
+        queue.extend(sorted(discovered, key=lambda url: int(dict(parse_qsl(urlsplit(url).query)).get("page", 1)), reverse=True))
+    # A negative VP-membership result is valid only after the complete linked
+    # listing has been read. Finding a main-table row alone is insufficient.
+    return resolved()
 
 
 def _json_variables(source, names):
@@ -534,7 +711,8 @@ def participation(client, contest_id, mode="vp"):
         raise QOJError("参赛模式必须是 vp 或 official。", 400)
     page = client._page(f"/contest/{int(contest_id)}")
     expected_username = client.username
-    if urlsplit(page.url).path not in (f"/contest/{contest_id}", f"/contest/{contest_id}/register", f"/contest/{contest_id}/registration"):
+    if (urlsplit(page.url).path not in (f"/contest/{contest_id}", f"/contest/{contest_id}/register", f"/contest/{contest_id}/registration")
+            and not (mode == "vp" and _vp_registration_url(page.url, contest_id))):
         raise QOJError("QOJ 未返回当前比赛的参赛页面。", 422)
     soup = BeautifulSoup(page.text, "html.parser")
     forms = native_forms(page.text, contest_id, page.url, mode)
@@ -543,6 +721,19 @@ def participation(client, contest_id, mode="vp"):
         registration = client._page(registration_url)
         _ensure_account(client, expected_username)
         forms = native_forms(registration.text, contest_id, registration.url, mode)
+    confirmation = mode == "vp" and bool(_vp_registration_url(page.url, contest_id))
+    if mode == "vp":
+        if confirmation:
+            _remember_vp_registration(client, contest_id, page.url)
+        else:
+            pending = getattr(client, "_vp_entry_pages", {}).get((int(contest_id), expected_username)) if forms else None
+            pending = pending or (_vp_registration_link(soup, contest_id, page.url) if not forms else None)
+            if pending:
+                page = _read_vp_registration(client, contest_id, pending, expected_username)
+                soup = BeautifulSoup(page.text, "html.parser")
+                forms = native_forms(page.text, contest_id, page.url, mode)
+                confirmation = bool(_vp_registration_url(page.url, contest_id))
+                _remember_vp_registration(client, contest_id, page.url)
     now = response_now(page)
     metadata = {"id": contest_id, "title": _page_title(soup, f"QOJ Contest {contest_id}"),
                 "duration_seconds": _duration(soup, page.text), "problems": [], "attachments": []}
@@ -551,8 +742,16 @@ def participation(client, contest_id, mode="vp"):
               "actions": [form["public"] for form in forms], "contest": metadata,
               "scoreboard": [], "scoreboard_available": False, "scoreboard_message": "参赛开始前不读取榜单。",
               "message": "尚未确认当前账号的 QOJ 原生参赛状态。", "upstream_url": f"https://qoj.ac/contest/{contest_id}"}
+    if confirmation:
+        result.update(entry_stage="confirmation", upstream_url=page.url,
+                      message="请完成下方 QOJ VP 报名确认；仅进入此页面尚未开始参赛。请确保在 VP 过程中遵守比赛规则。")
+        if not forms:
+            result["message"] = "暂不能识别 QOJ VP 的第二步报名表单，请在 QOJ 报名页核查。"
+            return result
     if forms:
-        result.update(status="unregistered", message="请通过 QOJ 原生表单开始 VP。" if mode == "vp" else "请选择 QOJ 参赛时间窗口并报名。")
+        result["status"] = "unregistered"
+        if not confirmation:
+            result["message"] = "请通过 QOJ 原生表单开始 VP。" if mode == "vp" else "请选择 QOJ 参赛时间窗口并报名。"
         return result
     if not client.username:
         result["message"] = "无法确认 QOJ 当前账号，请重新连接账号后刷新。"
@@ -561,9 +760,7 @@ def participation(client, contest_id, mode="vp"):
     registrants_url = _contest_link(soup, contest_id, "registrants")
     if registrants_url:
         try:
-            registrants = client._page(registrants_url)
-            _ensure_account(client, expected_username)
-            native_record = registrant_record(registrants.text, client.username)
+            native_record = read_registrant_record(client, contest_id, registrants_url, expected_username)
             if native_record:
                 record = native_record
         except QOJError as exc:
@@ -582,6 +779,7 @@ def participation(client, contest_id, mode="vp"):
         result["message"] = "当前账号已有另一种 QOJ 原生参赛记录，请切换参赛模式。"
         return result
     started, ends = record["started_at"], record["ends_at"]
+    getattr(client, "_vp_entry_pages", {}).pop((int(contest_id), expected_username), None)
     result.update(started_at=started, ends_at=ends)
     metadata["duration_seconds"] = record["duration_seconds"]
     if now < started:
@@ -597,6 +795,85 @@ def participation(client, contest_id, mode="vp"):
         return result
     result.update(read_scoreboard(client, page, contest_id, contest["problems"]))
     return result
+
+
+def _entry_message_text(fragment, form):
+    """Extract a bounded error explanation, never the returned contest page."""
+    message = BeautifulSoup(str(fragment), "html.parser")
+    for node in message.select("script, style, nav, header, footer, form, input, textarea, select, button, "
+                               "article, .uoj-article, table, pre, code, .uoj-username, "
+                               ".navbar, .uoj-footer, a[href*='/user/profile/']"):
+        node.decompose()
+    text = " ".join(message.get_text(" ", strip=True).split())
+    for name, value in form["hidden"].items():
+        if value and (len(value) >= 6 or re.search(r"token|csrf|cookie|session|auth", name, re.I)):
+            text = text.replace(value, "[redacted]")
+    return text[:500]
+
+
+def _entry_response_feedback(response, form):
+    """Recognize explicit QOJ/UOJ form failures, including HTTP-200 messages.
+
+    UOJ's becomeMsgPage() wraps its message in the regular .uoj-content area
+    and usually leaves HTTP status at 200; crsf_defend() uses this for expired
+    tokens. Generic Message pages can also be informational, so their neutral
+    text is retained until the subsequent participation check confirms it.
+    """
+    source = response.text
+    clean = lambda value: _entry_message_text(value, form)
+    try:
+        body = json.loads(source) if len(source) <= 65536 else None
+    except (ValueError, TypeError):
+        body = None
+    if isinstance(body, dict):
+        errors = body.get("errors") or body.get("error")
+        failed = body.get("success") is False or body.get("ok") is False or body.get("status") in ("error", "failed")
+        fields = {item["name"] for item in form["public"]["fields"]} | {"extra", "_token"}
+        # UOJ's optional server validator returns {field: explanation}.
+        if errors is None and body and set(body) <= fields:
+            errors = body
+        values = []
+        if isinstance(errors, str):
+            values = [errors]
+        elif isinstance(errors, dict):
+            for value in errors.values():
+                values.extend(value if isinstance(value, list) else [value])
+        elif isinstance(errors, list):
+            values = errors
+        text = clean(" ".join(value for value in values if isinstance(value, str)))
+        if not text and failed and isinstance(body.get("message"), str):
+            text = clean(body["message"])
+        if text or failed or errors is True:
+            return {"error": text or "QOJ 返回了参赛拒绝响应。"}
+        return {}
+    soup = BeautifulSoup(source, "html.parser")
+    for node in soup.select(".alert-danger, .uoj-error, .error-message, .is-invalid ~ .invalid-feedback, .has-error .help-block"):
+        if node.find_parent("article") or node.find_parent(class_="uoj-article"):
+            continue
+        if any(parent.has_attr("hidden") or parent.get("aria-hidden") == "true"
+               or set(parent.get("class", ())) & {"hidden", "d-none"}
+               or re.search(r"display\s*:\s*none", parent.get("style", ""), re.I)
+               for parent in (node, *node.parents)):
+            continue
+        if text := clean(node):
+            return {"error": text}
+    title = soup.title.get_text(" ", strip=True) if soup.title else ""
+    heading = soup.select_one(".uoj-content > h1, .uoj-content > h2, main > h1, main > h2")
+    titles = [title, heading.get_text(" ", strip=True) if heading else ""]
+    generic = re.compile(r"^(?:messages?|消息|提示)(?:\s*(?:[-|:：]|$))", re.I)
+    error_page = re.compile(r"^(?:error|错误|出错|oops(?:\.{3}|!)?)(?:\s*(?:[-|:：]|$))", re.I)
+    content = soup.select_one(".uoj-content, main")
+    if content and any(generic.search(value) or error_page.search(value) for value in titles):
+        text = clean(content)
+        if text:
+            definite = re.search(r"this page has expired|form is (?:incomplete|too large)|invalid.{0,20}(?:token|csrf)|"
+                                 r"(?:token|csrf).{0,30}(?:invalid|expired)|not (?:allowed|permitted)|permission denied|"
+                                 r"registration.{0,20}(?:failed|closed)|cannot|拒绝|失败|无权|过期|禁止", text, re.I)
+            return {"error" if definite or any(error_page.search(value) for value in titles) else "notice": text}
+    # UOJ can return the same CSRF/form error as plain text for AJAX requests.
+    if not soup.find(True) and re.search(r"this page has expired|the form is incomplete|invalid csrf token", source, re.I):
+        return {"error": clean(source)}
+    return {}
 
 
 def enter(client, contest_id, mode="vp", selection=None):
@@ -616,7 +893,12 @@ def enter(client, contest_id, mode="vp", selection=None):
         return current
     if not current["actions"]:
         raise QOJError(current["message"], 409)
-    page = client._page(f"/contest/{int(contest_id)}")
+    if mode == "vp" and current.get("entry_stage") == "confirmation":
+        page = _read_vp_registration(client, contest_id, current["upstream_url"], expected_username)
+        if not _vp_registration_url(page.url, contest_id):
+            raise QOJError("QOJ 报名确认页面已失效或参赛状态已变化，请刷新后重新选择。", 409)
+    else:
+        page = client._page(f"/contest/{int(contest_id)}")
     _ensure_account(client, expected_username)
     forms = native_forms(page.text, contest_id, page.url, mode)
     if mode == "official" and not forms:
@@ -632,17 +914,39 @@ def enter(client, contest_id, mode="vp", selection=None):
         raise QOJError("QOJ 参赛表单已变化，请刷新后重新选择。", 409)
     form = candidates[0]
     payload = form_payload(form, selection.get("values"))
-    response = client.fetch("POST", form["url"], data=payload, headers={"Referer": form["page_url"]})
-    if urlsplit(response.url).path.startswith("/login"):
+    response = client.fetch("POST", form["url"], data=payload, headers={"Referer": form["page_url"]},
+                            url_guard=lambda target: _entry_url_allowed(target, contest_id, mode))
+    observer = getattr(client, "_observe_page", None)
+    if callable(observer):
+        observer(response)
+    if urlsplit(response.url).path.startswith("/login") or BeautifulSoup(response.text, "html.parser").select_one("form#form-login"):
         client.authenticated = False
+        client.username = ""
         raise QOJError("QOJ 登录已过期；请重新连接后检查原生参赛状态。", 401)
-    soup = BeautifulSoup(response.text, "html.parser")
-    error = soup.select_one(".alert-danger, .uoj-error, .error-message")
-    if error:
-        raise QOJError("QOJ 拒绝参赛请求：" + error.get_text(" ", strip=True)[:500], 422)
+    _ensure_account(client, expected_username)
+    feedback = _entry_response_feedback(response, form)
+    if feedback.get("error"):
+        raise QOJError("QOJ 拒绝参赛请求：" + feedback["error"], 422)
+    next_confirmation = mode == "vp" and bool(_vp_registration_url(response.url, contest_id))
+    if next_confirmation:
+        _remember_vp_registration(client, contest_id, response.url)
     updated = participation(client, contest_id, mode)
     _ensure_account(client, expected_username)
+    if (next_confirmation and not _vp_registration_url(form["page_url"], contest_id)
+            and updated.get("entry_stage") == "confirmation" and updated.get("actions")):
+        # The dashboard's Start button only opened the registration page.
+        # Show that native form; never silently accept its next confirmation.
+        updated["entry_pending"] = True
+        return updated
     if updated["status"] in ("unregistered", "unavailable"):
-        updated["message"] = "已发送一次原生参赛请求，但 QOJ 尚未确认参赛状态。请刷新检查，不要重复点击开始。"
+        if feedback.get("notice"):
+            updated["message"] = "QOJ 返回参赛提示：" + feedback["notice"] + " 当前尚未确认参赛状态，请在 QOJ 核查；请求不会自动重发。"
+        elif updated.get("entry_stage") == "confirmation":
+            updated["message"] = "QOJ 尚未接受 VP 报名确认，请检查报名选项或在 QOJ 核查；请求不会自动重发。"
+        elif updated["status"] == "unregistered" and updated.get("actions"):
+            updated["message"] = ("QOJ 仍返回开始参赛表单，未确认已开启 VP。" if mode == "vp" else
+                                  "QOJ 仍返回报名表单，未确认已完成报名。") + "请在 QOJ 检查登录及参赛提示；请求不会自动重发。"
+        else:
+            updated["message"] = "已发送一次原生参赛请求，但 QOJ 尚未确认参赛状态。请刷新检查，不要重复点击开始。"
         updated["entry_uncertain"] = True
     return updated

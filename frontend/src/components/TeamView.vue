@@ -16,7 +16,7 @@ const team = computed(() => c.state?.team || null);
 const captain = computed(() => team.value?.role === 'captain');
 const member = computed(() => team.value?.role === 'member');
 const revoked = computed(() => team.value?.role === 'revoked');
-const busy = computed(() => !!activeAction.value || c.teamChanging || c.participationChanging);
+const busy = computed(() => !!activeAction.value || c.teamChanging || c.participationChanging || c.accountChanging);
 const joinCode = computed(() => captain.value && c.can('manage') ? team.value?.join_code || '' : '');
 const devices = computed(() => team.value && !revoked.value && Array.isArray(team.value.devices) ? team.value.devices : []);
 const roleLabel = computed(() => captain.value ? '队长' : member.value ? '队员' : '访问已撤销');
@@ -32,14 +32,14 @@ watch(() => c.context, () => {
   createName.value = c.state?.run?.team_name || 'My Team';
 }, { immediate: true, flush: 'sync' });
 
-async function changeTeam(path, body, message, action) {
+async function changeTeam(path, body, message, action, nextTab = 'team') {
   if (busy.value) return;
   teamError.value = '';
   activeAction.value = action;
   try {
-    await c.runTeamAction(path, body, message);
+    await c.runTeamAction(path, body, message, nextTab);
     joinInput.value = '';
-    c.navigate('team');
+    c.navigate(nextTab);
   } catch (error) {
     teamError.value = error.message || '无法更新队伍，请重试。';
     throw error;
@@ -64,7 +64,7 @@ async function joinTeam() {
   } catch { /* The inline error is retained beside the forms. */ }
 }
 
-function confirmTeamAction(title, message, allowed, path, body, success, action) {
+function confirmTeamAction(title, message, allowed, path, body, success, action, nextTab = 'team') {
   if (busy.value || !allowed()) return;
   const context = c.context;
   c.confirm(title, message, async () => {
@@ -72,7 +72,7 @@ function confirmTeamAction(title, message, allowed, path, body, success, action)
       teamError.value = '当前队伍或权限已变化，请重新确认操作。';
       throw new Error(teamError.value);
     }
-    await changeTeam(path, body, success, action);
+    await changeTeam(path, body, success, action, nextTab);
   });
 }
 
@@ -92,6 +92,12 @@ function revokeDevice(device) {
 function leaveTeam() {
   confirmTeamAction('离开当前队伍？', '这台电脑将结束对当前队伍的访问。之后可以使用邀请码重新加入。',
     () => !!team.value && !captain.value, '/api/team/leave', {}, '已离开队伍，可重新加入。', 'leave');
+}
+
+function dissolveTeam() {
+  confirmTeamAction('解散队伍？',
+    '这只会解散当前反代中的本地队伍，不会结束 QOJ 上的比赛。邀请码与命令行配置将立即失效，所有队员电脑会退出队伍；历史参赛、提交和打印记录保留。',
+    () => captain.value && c.can('manage'), '/api/team/dissolve', {}, '队伍已解散。', 'dissolve', 'participation');
 }
 
 async function copyCode() {
@@ -168,7 +174,7 @@ async function copyCode() {
           </tbody>
         </table>
       </div>
-      <div class="team-member-actions"><span id="team-member-count" class="muted small">{{ team && !revoked ? `队员电脑：${Number(team.member_count) || 0} / ${Number(team.max_members) || 2}` : '' }}</span><button id="team-leave-button" type="button" class="button button-danger-outline" :hidden="!team || captain" :disabled="busy" @click="leaveTeam">离开队伍</button></div>
+      <div class="team-member-actions"><span id="team-member-count" class="muted small">{{ team && !revoked ? `队员电脑：${Number(team.member_count) || 0} / ${Number(team.max_members) || 2}` : '' }}</span><button v-if="captain && c.can('manage')" id="team-dissolve-button" type="button" class="button button-danger-outline" :disabled="busy" @click="dissolveTeam">{{ activeAction === 'dissolve' ? '正在解散…' : '解散队伍' }}</button><button id="team-leave-button" type="button" class="button button-danger-outline" :hidden="!team || captain" :disabled="busy" @click="leaveTeam">离开队伍</button></div>
     </section>
     <CliToolsPanel />
   </section>

@@ -4,9 +4,10 @@ from tempfile import TemporaryDirectory
 from threading import RLock
 import unittest
 from unittest.mock import patch
+from urllib.parse import parse_qs, urlsplit
 
 from app import create_app
-from qoj import QOJClient
+from qoj import QOJClient, QOJError
 import test_participation as fixtures
 
 
@@ -17,6 +18,38 @@ class BoundFixtureClient(fixtures.FixtureClient):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.lock = RLock()
+
+
+class PaginatedVPClient(BoundFixtureClient):
+    """QOJ 1802 layout: personal VP marker and duration row on different pages.
+
+    Only the table/pagination structure is reproduced; all identities, times,
+    contest metadata and problems are synthetic offline fixtures.
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__(mode="vp", **kwargs)
+        self.fail_later_page = False
+
+    def _page(self, path):
+        parsed = urlsplit(path)
+        if parsed.path != "/contest/9/registrants":
+            return super()._page(path)
+        self.gets.append(parsed.path + ("?" + parsed.query if parsed.query else ""))
+        page = parse_qs(parsed.query).get("page", ["1"])[0]
+        own = fixtures.registrants(self.start).split("</table>")
+        other = fixtures.registrants(self.start, username="other-fixture-team").split("</table>")
+        if page == "1":
+            body = other[0] + "</table>" + own[1] + "</table>"
+            body += '<ul class="pagination"><li class="active"><a href="?page=1">1</a></li><li><a href="/contest/9/registrants?page=2">2</a></li></ul>'
+        elif page == "2":
+            if self.fail_later_page:
+                raise QOJError("Fixture registrants page unavailable", 403)
+            body = own[0] + "</table>" + other[1] + "</table>"
+            body += '<ul class="pagination"><li><a href="/contest/9/registrants?page=1">1</a></li><li class="active"><a href="?page=2">2</a></li></ul>'
+        else:
+            raise AssertionError("Unadvertised fixture registrants page: " + path)
+        return fixtures.response(body, parsed.path + ("?" + parsed.query if parsed.query else ""))
 
 
 class NativeAdapterAPITests(unittest.TestCase):
@@ -105,6 +138,68 @@ class NativeAdapterAPITests(unittest.TestCase):
         self.assertEqual(started["run"]["ends_at"], official_start + 18000)
         self.assertEqual(len(started["contest"]["problems"]), 2)
         self.assertEqual(started["scoreboard"][0]["rank"], 7)
+        self.assertEqual(len(upstream.posts), 1)
+
+    def test_vp_start_joins_registration_time_and_virtual_membership_across_pages(self):
+        upstream = PaginatedVPClient()
+        client = self.make_client(upstream, "vp")
+        initial = self.state(client)
+        token = initial["csrf_token"]
+        created = client.post("/api/team/create", json={"name": "Pagination fixture team"},
+                              headers={"X-CSRF-Token": token})
+        self.assertEqual(created.status_code, 200)
+        self.assert_hidden(created.get_json())
+        self.assertFalse(any("registrants" in path or "standings" in path for path in upstream.gets))
+
+        entered = self.start(client, {"mode": "vp", "action": "regvir", "selection": {}})
+        self.assertEqual(entered["participation"]["status"], "running")
+        self.assertFalse(entered["participation"].get("entry_uncertain", False))
+        self.assertEqual(entered["run"]["started_at"], upstream.start)
+        self.assertEqual(entered["run"]["ends_at"], upstream.start + 18000)
+        self.assertTrue(entered["permissions"]["submit"])
+        self.assertIn("/contest/9/registrants?page=2", upstream.gets)
+        self.assertEqual(len(upstream.posts), 1)
+
+        refreshed = self.state(client)
+        self.assertEqual(refreshed["run"]["id"], entered["run"]["id"])
+        restored = self.start(client, {"mode": "vp", "action": "regvir", "selection": {}})
+        self.assertEqual(restored["run"]["id"], entered["run"]["id"])
+        self.assertEqual(len(upstream.posts), 1)
+
+    def test_already_started_paginated_vp_recovers_without_another_start_request(self):
+        upstream = PaginatedVPClient(entered=True)
+        client = self.make_client(upstream, "vp")
+        state = self.state(client)
+        self.assertEqual(state["participation"]["status"], "running")
+        self.assertEqual(state["run"]["started_at"], upstream.start)
+        self.assertEqual(upstream.posts, [])
+
+    def test_missing_later_registration_page_does_not_invent_a_local_vp(self):
+        upstream = PaginatedVPClient(entered=True)
+        upstream.fail_later_page = True
+        client = self.make_client(upstream, "vp")
+        self.assert_hidden(self.state(client))
+        self.assertNotIn("/contest/9/standings", upstream.gets)
+        self.assertEqual(upstream.posts, [])
+
+    def test_uncertain_start_recovers_by_refreshing_after_registration_page_returns(self):
+        upstream = PaginatedVPClient()
+        upstream.fail_later_page = True
+        client = self.make_client(upstream, "vp")
+        token = self.state(client)["csrf_token"]
+        response = client.post("/api/start", json={"mode": "vp", "action": "regvir", "selection": {}},
+                               headers={"X-CSRF-Token": token})
+        self.assertEqual(response.status_code, 409)
+        self.assertTrue(response.get_json()["error"])
+        uncertain = response.get_json()["state"]
+        self.assert_hidden(uncertain)
+        self.assertTrue(uncertain["participation"].get("entry_uncertain"))
+        self.assertEqual(len(upstream.posts), 1)
+        upstream.fail_later_page = False
+        recovered = self.state(client)
+        self.assertEqual(recovered["participation"]["status"], "running")
+        self.assertFalse(recovered["participation"].get("entry_uncertain", False))
+        self.assertEqual(recovered["run"]["started_at"], upstream.start)
         self.assertEqual(len(upstream.posts), 1)
 
 
