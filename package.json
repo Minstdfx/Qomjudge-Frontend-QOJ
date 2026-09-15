@@ -1,0 +1,14 @@
+{
+  "name": "qoj-contest-frontend",
+  "private": true,
+  "version": "1.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --config frontend/vite.config.js",
+    "build:check": "vite build --config frontend/vite.config.js",
+    "build": "npm run build:check && node scripts/publish-frontend.mjs"
+  },
+  "dependencies": { "vue": "3.5.42" },
+  "devDependencies": { "@vitejs/plugin-vue": "6.0.9", "vite": "8.3.0" },
+  "engines": { "node": "^20.19.0 || >=22.12.0" }
+}

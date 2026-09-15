@@ -1,0 +1,13 @@
+.venv
+.data
+.git
+__pycache__
+artifacts
+tests
+*.pyc
+node_modules
+frontend-dist
+*.log
+previews
+releases
+qoj-cli*.json

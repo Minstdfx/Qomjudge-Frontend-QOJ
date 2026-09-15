@@ -1,0 +1,12 @@
+.venv/
+.data/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+artifacts/
+.env
+*.log
+node_modules/
+frontend-dist/
+releases/
+qoj-cli*.json
