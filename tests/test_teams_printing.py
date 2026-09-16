@@ -284,6 +284,25 @@ class TeamsPrintingTests(unittest.TestCase):
         self.assertTrue(preview.headers["Content-Disposition"].startswith("inline;"))
         preview.close()
 
+    def test_team_member_reads_highlighted_code_with_original_download(self):
+        member = self.paired()
+        self.start()
+        source = b'\n\tint main() { return 0; }\n\n'
+        printed = self.new_file('main.cpp', source)
+        preview = member.get(printed['view_url'])
+        self.assertEqual(preview.status_code, 200)
+        self.assertIn("sandbox; default-src 'none'", preview.headers['Content-Security-Policy'])
+        soup = BeautifulSoup(preview.get_data(as_text=True), 'html.parser')
+        self.assertTrue(soup.select('.source .k'))
+        self.assertTrue(soup.select('.linenos'))
+        for line in soup.select('.linenos'):
+            line.decompose()
+        self.assertEqual(soup.code.get_text(), source.decode('utf-8'))
+        preview.close()
+        download = member.get(printed['download_url'])
+        self.assertEqual(download.data, source)
+        download.close()
+
     def test_invalid_extensions_encodings_pdf_magic_and_oversize_are_rejected(self):
         self.start()
         for name, content in (("payload.exe", b"MZ executable"), ("page.html", b"<script>attack()</script>"),

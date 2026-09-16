@@ -5,8 +5,10 @@ Requires Playwright, Microsoft Edge and the Python application dependencies.
 Never connects to the running application or loads its data/browser profile.
 """
 from contextlib import ExitStack
+from datetime import datetime, timezone
 import hashlib
 import json
+import os
 from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
@@ -53,6 +55,11 @@ def main():
     with sync_playwright() as playwright, ExitStack() as cleanup:
         temporary = cleanup.enter_context(TemporaryDirectory(prefix='qoj-preview-'))
         app = create_app(contest_id=1, demo=True, data_dir=Path(temporary))
+        if os.environ.get('QOJ_FRONTEND_STATIC'):
+            app.static_folder = str((ROOT / os.environ['QOJ_FRONTEND_STATIC']).resolve())
+        frontend_entry = Path(app.static_folder) / 'index.html'
+        assert frontend_entry.is_file()
+        frontend_hash = hashlib.sha256(frontend_entry.read_bytes()).hexdigest()
         app.config['TESTING'] = True
         server = make_server('127.0.0.1', 0, app, threaded=True, request_handler=QuietHandler)
         thread = Thread(target=server.serve_forever, daemon=True)
@@ -153,7 +160,11 @@ def main():
             expect(target.locator('#demo-banner')).to_be_visible()
             expect(target.locator('#contest-id')).to_have_text('CONTEST #1')
             # Keep the visible demo banner in every unmodified browser screenshot.
-            assert '3962' not in target.locator('body').inner_text()
+            for frame in target.frames:
+                visible_text = frame.locator('body').inner_text()
+                assert '3962' not in visible_text
+                assert 'domjudge' not in visible_text.casefold(), 'Unexpected branding in preview'
+            assert 'domjudge' not in target.title().casefold()
             target.evaluate('document.fonts.ready')
             path = output / name
             target.screenshot(path=str(path), full_page=True, animations='disabled')
@@ -178,6 +189,9 @@ def main():
         page.locator('[data-tab="team"]').click()
         page.reload(wait_until='networkidle')
         expect(page.locator('#team-devices')).to_contain_text('Member 2 PC')
+        expect(page.locator('#team-dissolve-button')).to_be_visible()
+        expect(page.locator('#cli-tools-panel')).to_be_visible()
+        expect(page.locator('#cli-status')).to_have_text('尚未启用')
         capture('06-team.png', '队伍协作：一名队长、两名队员；邀请码仅用于临时演示')
         mobile = members[0].new_page()
         mobile.on('pageerror', lambda error: errors.append(str(error)))
@@ -186,14 +200,32 @@ def main():
         expect(mobile.locator('#prints-table')).to_contain_text('team-notes.txt')
         assert mobile.evaluate('document.documentElement.scrollWidth <= innerWidth')
         capture('07-member-mobile.png', '手机窄屏：队员查看共享打印文件', mobile)
+        page.locator('[data-tab="attachments"]').click()
+        expect(page.locator('#attachments-table')).to_contain_text('samples.zip')
+        expect(page.locator('#attachments-count')).to_have_text('共 2 项附件')
+        capture('08-attachments.png', '比赛附件：离线样例压缩包与说明文件')
+        page.locator('[data-tab="problems"]').click()
+        expect(page.frame_locator('#statement-frame').locator('h1')).to_contain_text('A + B')
+        page.locator('#submit-button').click()
+        expect(page.locator('#submit-dialog')).to_be_visible()
+        expect(page.locator('#submit-language')).to_be_enabled()
+        page.locator('#source-code').fill(SOURCE)
+        expect(page.locator('#send-button')).to_be_enabled()
+        capture('09-submit.png', '提交代码：离线示例源码与语言选择；未发送提交')
+        page.locator('[data-close="submit-dialog"]').first.click()
         assert not errors, errors
         assert not blocked, 'An unexpected non-demo request was blocked'
         assert all(isinstance(runtime['client'], DemoClient) for runtime in app.extensions['clients'].values())
 
+    version = json.loads((ROOT / 'package.json').read_text(encoding='utf-8'))['version']
+    captured_at = datetime.now(timezone.utc).isoformat()
     manifest = {'mode': 'offline-demo', 'contest_id': 1, 'private_data_used': False,
+                'captured_at': captured_at, 'project_version': version,
+                'frontend_entry_sha256': frontend_hash, 'branding_check_passed': True,
                 'external_requests': 0, 'images': images}
     (output / 'manifest.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding='utf-8')
-    note = ('这些截图均由新建的离线演示实例生成，contest ID 为 1。\n'
+    note = (f'截图时间（UTC）：{captured_at}；项目版本：v{version}。\n'
+            '这些截图均由新建的离线演示实例生成，contest ID 为 1。\n'
             '队名、成绩、提交代码、打印文件和邀请码均为测试数据。\n'
             '未读取现有比赛数据、账号 Cookie 或已有浏览器窗口，未请求 QOJ。\n'
             '截图保留页面 DEMO 标识；临时服务及浏览器在完成后已关闭。\n\n'

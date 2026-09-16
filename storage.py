@@ -81,6 +81,15 @@ class Store:
             # A process killed during a POST must never blindly resubmit it.
             db.execute("UPDATE submissions SET verdict='UNKNOWN', message=? WHERE verdict='SUBMITTING'",
                        ("服务重启前的提交结果未确认；请在 QOJ 核查，程序不会自动重发。",))
+            # Older versions mislabeled this exact pre-POST validation error
+            # as uncertain. Change only rows with saved code and no receipt;
+            # all other UNKNOWN records may represent an actual remote POST.
+            rejected_action = "QOJ 提交表单地址与所选题目不一致。"
+            db.execute("""UPDATE submissions SET verdict='FAILED', message=?, next_poll_at=0
+                WHERE verdict='UNKNOWN' AND qoj_id IS NULL AND message=?
+                AND EXISTS (SELECT 1 FROM submission_payloads
+                    WHERE submission_id=submissions.id AND receipt IS NULL)""",
+                       ("代码尚未发送到 QOJ：" + rejected_action, rejected_action))
 
     @contextmanager
     def connect(self):
@@ -206,9 +215,19 @@ class Store:
                 # hidden CE and failed runs are indistinguishable as pending.
                 submissions = [{**sub, "verdict": "PENDING"} if sub["elapsed_seconds"] >= cutoff else sub
                                for sub in submissions]
+            scored = score(problems, submissions)
+            # Header totals count every visible record, including submissions
+            # after the first AC; scoring attempts and penalties keep their
+            # existing first-acceptance semantics. Never branch on a verdict.
+            for item in scored["problem_stats"].values():
+                item["submissions"] = 0
+            for sub in submissions:
+                item = scored["problem_stats"].get(str(sub["problem_id"]))
+                if item is not None:
+                    item["submissions"] += 1
             result.append({"team_name": row["team_name"], "is_self": row["sid"] == sid,
                            "frozen": frozen, "freeze_at": freeze_at, "unfreeze_at": unfreeze_at,
-                           **score(problems, submissions)})
+                           **scored})
         result.sort(key=lambda r: (-r["solved"], r["penalty"], r["team_name"].casefold()))
         rank = 0
         previous = None

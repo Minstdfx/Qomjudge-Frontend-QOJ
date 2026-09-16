@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import hmac
-import html
 import json
 import math
 import os
@@ -21,10 +20,10 @@ from werkzeug.exceptions import HTTPException
 from cli_auth import CLIAuthError, CLITokenStore
 from demo import DemoClient
 from downloads import attachment_response
-from printing import MAX_PRINT_SIZE, MAX_RUN_BYTES, MAX_RUN_FILES, PrintError, PrintStore
+from printing import MAX_PRINT_SIZE, MAX_RUN_BYTES, MAX_RUN_FILES, PrintError, PrintStore, render_print
 from qoj import QOJClient, QOJError, rewrite_proxy
 from storage import Store, score
-from statements import pdf_response, statement_pdfs
+from statements import StatementPDFCache, statement_pdfs
 from teams import TeamError, TeamStore
 
 ROOT = Path(__file__).resolve().parent
@@ -77,6 +76,8 @@ def create_app(contest_id=1802, demo=False, duration_minutes=None, data_dir=None
     clients = {}
     registry_lock = threading.Lock()
     app.extensions["clients"] = clients
+    statement_cache = StatementPDFCache()
+    app.extensions["statement_cache"] = statement_cache
 
     def runtime():
         cli = getattr(g, "cli", None)
@@ -178,6 +179,7 @@ def create_app(contest_id=1802, demo=False, duration_minutes=None, data_dir=None
         return store.participation_mode(g.owner_sid, contest_key, mode)
 
     def invalidate_native():
+        statement_cache.invalidate(g.owner_sid)
         g.runtime.update(loaded=False, contest=None, problems={})
         g.pop("native_snapshot", None)
         g.pop("native_run", None)
@@ -213,12 +215,14 @@ def create_app(contest_id=1802, demo=False, duration_minutes=None, data_dir=None
                     contest = {"id": contest_id, "title": f"QOJ Contest #{contest_id}", "duration_seconds": 0,
                                "problems": [], "attachments": []}
                     snapshot["scoreboard"] = []
+                    snapshot["scoreboard_problem_totals"] = {}
                 elif not isinstance(contest, dict) or not isinstance(contest.get("problems"), list):
                     raise AppError("无法确认 QOJ 当前比赛的题目列表。", 502)
                 snapshot["contest"] = contest
                 scope = (selected_mode, rt["client"].username, snapshot.get("started_at"), visible)
                 if rt.get("native_scope") != scope:
                     rt["problems"].clear()
+                    statement_cache.invalidate(g.owner_sid)
                 rt.update(native_scope=scope, contest=contest, loaded=True, contest_error=None, contest_error_status=None)
                 g.native_snapshot = snapshot
                 g.pop("native_run", None)
@@ -274,6 +278,7 @@ def create_app(contest_id=1802, demo=False, duration_minutes=None, data_dir=None
                 rt["contest_error"] = None
                 rt["contest_error_status"] = None
                 rt["problems"].clear()
+                statement_cache.invalidate(g.owner_sid)
             except (QOJError, AppError) as exc:
                 rt["contest_error"] = str(exc)
                 rt["contest_error_status"] = exc.status
@@ -308,6 +313,7 @@ def create_app(contest_id=1802, demo=False, duration_minutes=None, data_dir=None
         rt = g.runtime
         if force:
             rt["problems"].pop(problem_id, None)
+            statement_cache.invalidate(g.owner_sid, problem_id)
         if problem_id not in rt["problems"]:
             rt["problems"][problem_id] = rt["client"].problem(contest_id, problem_id)
         return {**p, **rt["problems"][problem_id], "label": p["label"]}
@@ -709,15 +715,18 @@ def create_app(contest_id=1802, demo=False, duration_minutes=None, data_dir=None
             if candidate is None:
                 raise AppError("本题没有此 PDF 题面。", 404)
             try:
-                upstream = client.fetch("GET", candidate["url"], stream=True,
+                def fetch_pdf():
+                    return client.fetch("GET", candidate["url"], stream=True,
                                         headers={"Referer": f"https://qoj.ac/contest/{contest_id}/problem/{problem_id}",
                                                  "Accept-Encoding": "identity"})
-                return pdf_response(upstream)
+
+                return statement_cache.response(g.owner_sid, problem_id, candidate["url"],
+                                                fetch_pdf, request.environ)
             except QOJError as exc:
                 if exc.status == 401:
                     client.authenticated = False
                     client.username = ""
-                    g.runtime["loaded"] = False
+                    invalidate_native()
                 raise
 
     def public_print(item):
@@ -776,12 +785,8 @@ def create_app(contest_id=1802, demo=False, duration_minutes=None, data_dir=None
         if item["kind"] == "pdf":
             response = send_file(path, download_name=item["name"], mimetype="application/pdf")
         else:
-            title = html.escape(item["name"])
-            body = html.escape(path.read_text(encoding="utf-8-sig"))
-            response = Response('<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
-                                f'<title>{title} · 虚拟打印</title><style>body{{margin:24px;font:15px/1.6 system-ui,sans-serif;color:#243647}}'
-                                'pre{white-space:pre-wrap;overflow-wrap:anywhere;font:14px/1.6 ui-monospace,monospace;border-top:1px solid #ccd3d9;padding-top:16px}'
-                                f'</style><h1>{title}</h1><pre>{body}</pre></html>', content_type="text/html; charset=utf-8")
+            response = Response(render_print(item["name"], path.read_text(encoding="utf-8-sig")),
+                                content_type="text/html; charset=utf-8")
         response.headers["Content-Security-Policy"] = "sandbox; default-src 'none'; style-src 'unsafe-inline'"
         return response
 
@@ -875,17 +880,30 @@ def create_app(contest_id=1802, demo=False, duration_minutes=None, data_dir=None
                 find_problem(problem_id)
             sub_id = store.add_submission(run, info, language)
             store.save_submission_payload(sub_id, source, filename)
+            prepared = False
+            can_track_post = callable(getattr(g.runtime["client"], "reconcile_submission", None))
+
+            def remember_prepared(receipt):
+                nonlocal prepared
+                store.save_submission_receipt(sub_id, receipt)
+                prepared = True
+
             try:
                 client = g.runtime["client"]
                 options = {}
-                if callable(getattr(client, "reconcile_submission", None)):
-                    options["on_prepared"] = lambda receipt: store.save_submission_receipt(sub_id, receipt)
+                if can_track_post:
+                    options["on_prepared"] = remember_prepared
                 result = client.submit(contest_id, problem_id, language, source, filename, **options)
                 store.update_submission(sub_id, verdict="PENDING" if demo or result.get("qoj_id") else "UNKNOWN", qoj_id=result.get("qoj_id"),
                                         qoj_url=result.get("qoj_url"), message=result.get("message", ""))
             except QOJError as exc:
-                failure = {"verdict": "UNKNOWN", "message": str(exc)}
-                if exc.status == 429:
+                # The adapter calls on_prepared only after its validation and
+                # before its sole POST. Earlier errors cannot have submitted
+                # code; later errors must remain uncertain and GET-only.
+                not_sent = can_track_post and not prepared
+                failure = {"verdict": "FAILED" if not_sent else "UNKNOWN",
+                           "message": f"代码尚未发送到 QOJ：{exc}" if not_sent else str(exc)}
+                if not not_sent and exc.status == 429:
                     now = time.time()
                     failure.update(checked_at=now, next_poll_at=now + submission_retry_delay(exc))
                 store.update_submission(sub_id, **failure)

@@ -47,7 +47,8 @@ async function readSource() {
     if (stale()) return;
     if (typeof result?.source !== 'string') throw new Error('服务器返回了无法读取的源代码。');
     filename.value = typeof result.filename === 'string' && /^[A-Za-z0-9][A-Za-z0-9_.+\-]{0,199}$/.test(result.filename) ? result.filename : `submission-${id}.txt`;
-    meta.value = `${typeof result.language === 'string' ? result.language : submission.language || '未知语言'} · ${result.qoj_id ? `QOJ #${result.qoj_id}` : 'QOJ 编号待确认'}`;
+    const reference = result.qoj_id ? `QOJ #${result.qoj_id}` : String(submission.verdict).toUpperCase() === 'FAILED' ? '未生成 QOJ 提交编号' : 'QOJ 编号待确认';
+    meta.value = `${typeof result.language === 'string' ? result.language : submission.language || '未知语言'} · ${reference}`;
     source.value = result.source;
     downloadURL.value = URL.createObjectURL(new Blob([result.source], { type: 'text/plain;charset=utf-8' }));
     loaded.value = true;

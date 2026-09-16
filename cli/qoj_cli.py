@@ -21,7 +21,7 @@ MAX_PRINT = 2 * 1024 * 1024
 TEXT_EXTENSIONS = {'.txt', '.cpp', '.cc', '.cxx', '.c', '.h', '.hpp', '.py', '.java',
                    '.kt', '.rs', '.go', '.pas', '.js', '.cs', '.rb', '.md'}
 LANGUAGE_PATTERNS = {
-    'cpp': r'c\+\+|cpp|gnu\+\+', 'cc': r'c\+\+|cpp|gnu\+\+', 'cxx': r'c\+\+|cpp|gnu\+\+',
+    'cpp': r'c\+\+|g\+\+|cpp|gnu\+\+', 'cc': r'c\+\+|g\+\+|cpp|gnu\+\+', 'cxx': r'c\+\+|g\+\+|cpp|gnu\+\+',
     'c': r'^(?:gnu\s*)?c(?:\d|\s|$)|clang\s*c\b',
     'py': r'python|pypy', 'java': r'java', 'kt': r'kotlin', 'rs': r'rust',
     'go': r'go(?:lang)?\b', 'pas': r'pascal', 'js': r'javascript|node',
@@ -190,6 +190,21 @@ def select_problem(state, hint):
     return matches[0]
 
 
+def cpp_standard(item):
+    """Rank the advertised C++ standard, never the compiler release number."""
+    aliases = {'0x': 2011, '1y': 2014, '1z': 2017, '2a': 2020, '2b': 2023, '2c': 2026}
+    text = str(item.get('label', '')) + ' ' + item['value']
+    years = []
+    for token in re.findall(r'(?:c\+\+|g\+\+|gnu\+\+|cpp)\s*(20\d{2}|1998|0x|1y|1z|2a|2b|2c|\d{2})\b', text, re.I):
+        token = token.lower()
+        if token in aliases:
+            years.append(aliases[token])
+        else:
+            number = int(token)
+            years.append(number if len(token) == 4 else number + (1900 if number >= 80 else 2000))
+    return max(years, default=-1)
+
+
 def select_language(detail, hint, extension):
     languages = [item for item in detail.get('languages', [])
                  if isinstance(item, dict) and isinstance(item.get('value'), str) and item['value']]
@@ -204,10 +219,8 @@ def select_language(detail, hint, extension):
     matches = [item for item in languages if pattern and re.search(
         pattern, str(item.get('label', '')) + ' ' + item['value'], re.I)]
     if len(matches) > 1 and extension in {'cpp', 'cc', 'cxx'}:
-        preferred = [item for item in matches if re.search(r'(?:c\+\+|gnu\+\+|cpp)\s*17\b',
-                     str(item.get('label', '')) + ' ' + item['value'], re.I)]
-        if len(preferred) == 1:
-            matches = preferred
+        newest = max(cpp_standard(item) for item in matches)
+        matches = [item for item in matches if cpp_standard(item) == newest]
     if len(matches) != 1:
         raise CLIError('无法唯一确定语言，请用 -l 指定完整语言值。可选：' + safe_text(available))
     return matches[0]

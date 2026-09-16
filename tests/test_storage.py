@@ -111,6 +111,23 @@ class StoreTests(unittest.TestCase):
         self.assertEqual([r["team_name"] for r in board], ["Alpha", "Beta", "Charlie", "Delta"])
         self.assertEqual([r["rank"] for r in board], [1, 1, 3, 4])
 
+    def test_scoreboard_counts_post_acceptance_records_without_changing_scoring(self):
+        run = self.store.start("alice", "contest", "Alice", 3600, now=100)
+        self.accepted(run)
+        for seconds, verdict in enumerate(("WA", "CE", "PENDING", "AC"), start=120):
+            identifier = self.store.add_submission(run, PROBLEMS[0], "C++17", now=run["started_at"] + seconds)
+            self.store.update_submission(identifier, verdict=verdict)
+        self.accepted(run, problem=PROBLEMS[1], seconds=180)
+        self.accepted(run, problem={"id": 999, "label": "Other"}, seconds=240)
+        board = self.store.scoreboard("contest", "alice", PROBLEMS)
+        self.assertEqual(board[0]["problem_stats"]["10"], {
+            "attempts": 1, "wrong": 0, "pending": 0, "solved": True, "time": 1, "submissions": 5,
+        })
+        self.assertEqual(board[0]["problem_stats"]["20"]["submissions"], 1)
+        self.assertNotIn("999", board[0]["problem_stats"])
+        self.assertEqual((board[0]["solved"], board[0]["penalty"]), (2, 4))
+        self.assertNotIn("submissions", score(PROBLEMS, self.store.submissions(run["id"]))["problem_stats"]["10"])
+
     def test_reopen_preserves_data_and_marks_interrupted_submission_uncertain(self):
         run = self.store.start("alice", "contest", "Alice", 3600, now=100)
         accepted_id = self.accepted(run)
@@ -141,6 +158,43 @@ class StoreTests(unittest.TestCase):
             self.store.update_submission(identifier, run_id=900)
         with self.assertRaises(ValueError):
             self.store.update_submission(identifier)
+
+    def test_reopen_only_corrects_proven_preflight_action_failures_and_preserves_code(self):
+        run = self.store.start("alice", "contest", "Alice", 3600, now=100)
+        message = "QOJ 提交表单地址与所选题目不一致。"
+        source = "int main() {} // synthetic saved code\n"
+        cases = (
+            ("not_sent", "UNKNOWN", None, message, True, None),
+            ("prepared", "UNKNOWN", None, message, True, {}),
+            ("confirmed", "UNKNOWN", 987, message, True, None),
+            ("other_failure", "UNKNOWN", None, "Submission POST outcome uncertain", True, None),
+            ("pending", "PENDING", None, message, True, None),
+            ("no_payload", "UNKNOWN", None, message, False, None),
+        )
+        identifiers = {}
+        for name, verdict, qoj_id, note, saved, receipt in cases:
+            identifier = self.store.add_submission(run, PROBLEMS[0], "C++20", now=150)
+            identifiers[name] = identifier
+            self.store.update_submission(identifier, verdict=verdict, qoj_id=qoj_id,
+                                         message=note, next_poll_at=300)
+            if saved:
+                self.store.save_submission_payload(identifier, source, "main.cpp")
+            if receipt is not None:
+                self.store.save_submission_receipt(identifier, receipt)
+
+        before = {row["id"]: row for row in self.store.submissions(run["id"])}
+        reopened = Store(self.path)
+        after = {row["id"]: row for row in reopened.submissions(run["id"])}
+        corrected = after[identifiers["not_sent"]]
+        self.assertEqual(corrected["verdict"], "FAILED")
+        self.assertEqual(corrected["message"], "代码尚未发送到 QOJ：" + message)
+        self.assertEqual(corrected["next_poll_at"], 0)
+        self.assertEqual(reopened.submission_payload(corrected["id"]),
+                         {"source": source, "filename": "main.cpp", "receipt": None})
+        for name, identifier in identifiers.items():
+            if name != "not_sent":
+                self.assertEqual(after[identifier], before[identifier], name)
+        self.assertEqual(Store(self.path).submissions(run["id"]), reopened.submissions(run["id"]))
 
 
 if __name__ == "__main__":

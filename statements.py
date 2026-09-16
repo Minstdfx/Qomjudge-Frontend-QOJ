@@ -7,6 +7,11 @@ from __future__ import annotations
 
 import hashlib
 import re
+import threading
+import time
+from collections import OrderedDict
+from dataclasses import dataclass
+from itertools import chain
 from urllib.parse import parse_qs, quote, unquote, urlsplit, urlunsplit
 
 from bs4 import BeautifulSoup
@@ -15,6 +20,118 @@ from werkzeug.http import parse_options_header
 from werkzeug.utils import secure_filename
 
 from qoj import QOJError
+
+
+@dataclass(frozen=True)
+class _CachedPDF:
+    body: bytes
+    headers: dict
+    etag: str
+    expires_at: float
+
+
+class StatementPDFCache:
+    """Bounded, process-local PDF storage; no account files are written to disk.
+
+    Call ``response`` while holding the owner's QOJ client lock. That lock covers
+    permission checks and the complete cache fill, coalescing simultaneous PDF
+    opens by the captain and members without blocking other teams' downloads.
+    The internal lock only protects the shared LRU and its memory accounting.
+    """
+
+    def __init__(self, max_bytes=128 * 1024 * 1024, max_document_bytes=32 * 1024 * 1024,
+                 max_entries=128, ttl=6 * 3600, clock=time.monotonic):
+        self.max_bytes = max_bytes
+        self.max_document_bytes = min(max_document_bytes, max_bytes)
+        self.max_entries = max_entries
+        self.ttl = ttl
+        self.clock = clock
+        self._entries = OrderedDict()
+        self._bytes = 0
+        self._lock = threading.Lock()
+
+    def _remove(self, key):
+        item = self._entries.pop(key)
+        self._bytes -= len(item.body)
+
+    def invalidate(self, owner, problem_id=None):
+        """Forget PDFs when access changes or the user explicitly refreshes a problem."""
+        with self._lock:
+            for key in list(self._entries):
+                if key[0] == owner and (problem_id is None or key[1] == problem_id):
+                    self._remove(key)
+
+    def _get(self, key):
+        with self._lock:
+            item = self._entries.get(key)
+            if item is not None:
+                if item.expires_at <= self.clock():
+                    self._remove(key)
+                    return None
+                self._entries.move_to_end(key)
+            return item
+
+    def _put(self, key, item):
+        with self._lock:
+            for old_key, old_item in list(self._entries.items()):
+                if old_item.expires_at <= self.clock() or old_key == key:
+                    self._remove(old_key)
+            while self._entries and (self._bytes + len(item.body) > self.max_bytes
+                                     or len(self._entries) >= self.max_entries):
+                self._remove(next(iter(self._entries)))
+            if self.max_entries > 0 and len(item.body) <= self.max_bytes:
+                self._entries[key] = item
+                self._bytes += len(item.body)
+
+    def response(self, owner, problem_id, url, fetch, environ):
+        """Serve a verified full PDF, including local conditional/range requests.
+
+        Oversized documents keep the original streaming behavior. A failed or
+        truncated download never enters the cache. Browser storage stays disabled
+        by the API so every open still passes the current participation checks.
+        """
+        key = (owner, problem_id, url)
+        item = self._get(key)
+        if item is None:
+            source = pdf_response(fetch())
+            expected = source.content_length
+            if expected is not None and expected > self.max_document_bytes:
+                return source
+            iterator = iter(source.response)
+            chunks, length = [], 0
+            try:
+                for chunk in iterator:
+                    chunks.append(chunk)
+                    length += len(chunk)
+                    if length > self.max_document_bytes:
+                        # Unknown Content-Length: replay the bounded prefix and
+                        # stream the rest without retaining the whole document.
+                        def remainder():
+                            try:
+                                yield from chain(chunks, iterator)
+                            finally:
+                                source.close()
+
+                        response = Response(remainder(), headers=source.headers)
+                        response.call_on_close(source.close)
+                        return response
+                if expected is not None and length != expected:
+                    raise QOJError("QOJ PDF 题面下载不完整，请刷新后重试。", 502)
+                body = b"".join(chunks)
+                item = _CachedPDF(body, dict(source.headers), hashlib.sha256(body).hexdigest(),
+                                  self.clock() + self.ttl)
+            except QOJError:
+                source.close()
+                raise
+            except Exception:
+                source.close()
+                raise QOJError("读取 QOJ PDF 题面时网络连接中断，请刷新后重试。", 502) from None
+            source.close()
+            self._put(key, item)
+        response = Response(item.body, headers=item.headers)
+        response.set_etag(item.etag)
+        response.headers["Accept-Ranges"] = "bytes"
+        return response.make_conditional(environ, accept_ranges=True, complete_length=len(item.body))
 
 
 def statement_pdfs(info: dict, problem_id: int) -> list[dict]:

@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import { useContest } from '../composables/useContest.js';
 import { getProblemDetails } from '../composables/problemDetails.js';
+import { inferLanguage, latestCppLanguage } from '../composables/languageSelection.js';
 import BaseDialog from './BaseDialog.vue';
 
 const c = useContest();
@@ -9,6 +10,7 @@ const problemId = ref('');
 const source = ref('');
 const filename = ref('');
 const language = ref('');
+const languageExplicit = ref(false);
 const languages = ref([]);
 const loading = ref(false);
 const sending = ref(false);
@@ -28,7 +30,7 @@ const sizeLabel = computed(() => `${source.value.length.toLocaleString('zh-CN')}
 function draftKey(id) { return `qoj-vp:${draftScope}:draft:${id}`; }
 function saveDraft() {
   if (!problemId.value) return;
-  try { sessionStorage.setItem(draftKey(problemId.value), JSON.stringify({ source: source.value, language: language.value, filename: filename.value })); } catch { /* A draft must never prevent submission. */ }
+  try { sessionStorage.setItem(draftKey(problemId.value), JSON.stringify({ source: source.value, language: language.value, languageExplicit: languageExplicit.value, filename: filename.value })); } catch { /* A draft must never prevent submission. */ }
 }
 function readDraft(id) {
   try {
@@ -46,6 +48,7 @@ function clearSensitive() {
   saveDraft(); cancelRequests();
   draftScope = c.context;
   problemId.value = ''; source.value = ''; filename.value = ''; language.value = ''; languages.value = [];
+  languageExplicit.value = false;
   available.value = false; error.value = '';
   if (fileInput.value) fileInput.value.value = '';
   c.submitOpen = false; c.submitTarget = null;
@@ -63,6 +66,7 @@ async function prepare(id) {
   source.value = typeof draft.source === 'string' ? draft.source : '';
   filename.value = typeof draft.filename === 'string' ? draft.filename : '';
   language.value = ''; languages.value = [];
+  languageExplicit.value = false;
   if (fileInput.value) fileInput.value.value = '';
   available.value = false; loading.value = true; error.value = '';
   const stale = () => currentRequest !== detailRequest || currentController.signal.aborted || context !== c.context || !c.submitOpen || !allowed.value;
@@ -72,7 +76,11 @@ async function prepare(id) {
     languages.value = (Array.isArray(detail.languages) ? detail.languages : [])
       .filter((item) => item && ['string', 'number'].includes(typeof item.value) && typeof item.label === 'string')
       .map((item) => ({ value: String(item.value), label: item.label }));
-    language.value = languages.value.find((item) => item.value === String(draft.language))?.value || languages.value[0]?.value || '';
+    const savedLanguage = languages.value.find((item) => item.value === String(draft.language));
+    // Older drafts did not distinguish manual selection; preserve their choice.
+    languageExplicit.value = !!savedLanguage && draft.languageExplicit !== false;
+    language.value = (languageExplicit.value ? savedLanguage : inferLanguage(languages.value, filename.value, source.value)
+      || latestCppLanguage(languages.value) || languages.value[0])?.value || '';
     available.value = !!detail.submission_available && !!languages.value.length;
     if (!available.value) error.value = detail.message || '当前题目暂时无法提交，请检查 QOJ 登录状态或比赛权限。';
     return true;
@@ -89,17 +97,11 @@ function changeProblem(event) {
   prepare(event.target.value);
 }
 function guessLanguage(name) {
-  const extension = name.split('.').pop().toLowerCase();
-  const patterns = {
-    cpp: /c\+\+|cpp/i, cc: /c\+\+|cpp/i, cxx: /c\+\+|cpp/i,
-    c: /^(gnu\s*)?c(?:\d|\s|$)|clang\s*c\b/i, py: /python\s*3|pypy\s*3|python|pypy/i,
-    java: /java/i, kt: /kotlin/i, rs: /rust/i, go: /go(?:lang)?\b/i, pas: /pascal/i,
-    js: /javascript|node/i, cs: /c#|csharp/i, hs: /haskell/i, rb: /ruby/i,
-  };
-  const pattern = patterns[extension];
-  const option = pattern && languages.value.find((item) => pattern.test(item.label));
+  if (languageExplicit.value) return;
+  const option = inferLanguage(languages.value, name, source.value);
   if (option) language.value = option.value;
 }
+function selectLanguageManually() { languageExplicit.value = true; saveDraft(); }
 async function readFile(event) {
   const file = event.target.files?.[0];
   if (!file || !allowed.value || sending.value) return;
@@ -159,6 +161,7 @@ watch([() => c.submitOpen, () => c.submitTarget], () => {
   if (target) prepare(target.id);
 });
 watch([source, language, filename], saveDraft);
+watch(source, () => { if (!loading.value) guessLanguage(filename.value); });
 window.addEventListener('beforeunload', saveDraft);
 onBeforeUnmount(() => { saveDraft(); cancelRequests(); window.removeEventListener('beforeunload', saveDraft); });
 </script>
@@ -171,7 +174,7 @@ onBeforeUnmount(() => { saveDraft(); cancelRequests(); window.removeEventListene
         <div id="submit-demo-note" class="banner banner-demo" :hidden="!c.state?.demo">演示模式：仅生成模拟评测结果。</div>
         <div class="form-row">
           <div class="field"><label for="submit-problem">Problem <span>题目</span></label><select id="submit-problem" :value="problemId" name="problem_id" :disabled="sending" required @change="changeProblem"><option v-for="problem in (c.canRead ? c.problems : [])" :key="problem.id" :value="String(problem.id)">{{ problem.label }} — {{ problem.title }}</option></select></div>
-          <div class="field"><label for="submit-language">Language <span>语言</span></label><select id="submit-language" v-model="language" name="language" :disabled="loading || !languages.length || sending" required><option v-if="!languages.length" value="">{{ loading ? '正在获取语言…' : '暂无可用语言' }}</option><option v-for="item in languages" :key="item.value" :value="item.value">{{ item.label }}</option></select></div>
+          <div class="field"><label for="submit-language">Language <span>语言</span></label><select id="submit-language" v-model="language" name="language" :disabled="loading || !languages.length || sending" required @change="selectLanguageManually"><option v-if="!languages.length" value="">{{ loading ? '正在获取语言…' : '暂无可用语言' }}</option><option v-for="item in languages" :key="item.value" :value="item.value">{{ item.label }}</option></select></div>
         </div>
         <label class="file-picker" for="source-file"><span class="file-icon" aria-hidden="true">⌘</span><span><strong id="file-picker-label">{{ filename || '选择代码文件' }}</strong><small>支持 .cpp、.c、.py、.java 等文本文件，或在下方粘贴代码</small></span><span class="button button-outline button-small">浏览文件</span></label>
         <input id="source-file" ref="fileInput" class="sr-only" type="file" accept=".cpp,.cc,.cxx,.c,.py,.java,.kt,.rs,.go,.pas,.txt,.js,.cs,.hs,.rb" :disabled="sending" @change="readFile">

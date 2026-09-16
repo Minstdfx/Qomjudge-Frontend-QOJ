@@ -52,6 +52,8 @@ def main():
         payload = {"problem_id": 1, "language": "C++17", "source": SOURCE, "filename": "main.cpp"}
         pending = post(captain_client, "/api/submit", payload)["submission"]
         known = post(captain_client, "/api/submit", {**payload, "filename": "known.cpp"})["submission"]
+        not_sent = post(captain_client, "/api/submit", {**payload, "filename": "not-sent.cpp"})["submission"]
+        store.update_submission(not_sent["id"], verdict="FAILED", message="代码尚未发送到 QOJ：提交表单校验失败。")
         store.update_submission(known["id"], verdict="UNKNOWN", qoj_id=9001,
                                 qoj_url="https://qoj.ac/submission/9001", checked_at=time.time() + 3600,
                                 message="Fixture: verdict not available yet.")
@@ -133,6 +135,10 @@ def main():
             expect(pending_row).to_contain_text(MESSAGE)
             expect(known_row).to_contain_text("等待 QOJ 结果")
             expect(known_row).to_contain_text("Fixture: verdict not available yet.")
+            not_sent_row = captain.locator(f'#submissions-table [data-submission-id="{not_sent["id"]}"]')
+            expect(not_sent_row.locator(".verdict-final.verdict-wrong")).to_contain_text("提交失败")
+            expect(not_sent_row).to_contain_text("代码尚未发送到 QOJ")
+            expect(not_sent_row).not_to_contain_text("编号待确认")
             expect(captain.locator("#submissions-table")).not_to_contain_text("Unknown")
             expect(member.locator('[data-tab="submissions"]')).not_to_be_visible()
             expect(member.locator("[data-submission-source]")).to_have_count(0)
@@ -155,6 +161,12 @@ def main():
             assert Path(download.path()).read_bytes() == SOURCE.encode("utf-8")
             assert sum(path.endswith("/source") for _, _, path in requests) == 1
             captain.screenshot(path=str(artifacts / "submission-source-desktop.png"), full_page=True)
+            close_source(captain)
+
+            show_source(captain, not_sent["id"])
+            expect(captain.locator("#submission-source-code")).to_have_value(SOURCE)
+            expect(captain.locator("#submission-source-meta")).to_contain_text("未生成 QOJ 提交编号")
+            expect(captain.locator("#submission-source-meta")).not_to_contain_text("编号待确认")
             close_source(captain)
 
             show_source(captain, legacy_id)

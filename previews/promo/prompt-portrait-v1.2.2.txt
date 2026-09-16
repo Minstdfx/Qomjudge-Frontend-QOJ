@@ -1,0 +1,65 @@
+Generation mode: built-in image_gen
+Input images: ../demo/01-overview.png, ../demo/03-scoreboard.png, ../demo/06-team.png, ../demo/05-printing.png
+
+Use case: compositing / ads-marketing.
+Create ONE finished PORTRAIT promotional poster by compositing the FOUR supplied REAL application screenshots into a new, original editorial layout. The user explicitly wants a detailed VERTICAL poster with actual preview images. Canvas is tall portrait, target 1536 by 2560 pixels (3:5), never landscape. This is a standalone poster, not a photo of a poster.
+
+Input roles:
+Image 1: supporting insert, current offline demo OVERVIEW screenshot, the main preview.
+Image 2: supporting insert, current offline demo SCOREBOARD screenshot.
+Image 3: supporting insert, current offline demo TEAM MANAGEMENT screenshot.
+Image 4: supporting insert, current offline demo VIRTUAL PRINTING screenshot.
+These are the actual application's screenshots, not generic style inspiration. INSERT ALL FOUR as recognizably faithful screenshot panels. Preserve their real light interface, dark navigation, green/red score cells, visible demo indicators, fake team names, tabular structure and actual controls. Do not invent a replacement application UI. Do not make a 3D monitor or laptop. Keep screenshot panels front-facing, undistorted, sharp, with subtle borders and shadows. Cropping to useful content and removing empty bottom whitespace is allowed; do not change the displayed results or UI text. Around the screenshots create a new clean poster design. All inputs are deliberately synthetic offline demonstration data.
+
+Design: refined technical magazine/product brochure aesthetic, warm ivory background, almost-black navy headlines, accepted-green accents and muted sky-blue details borrowed from the screenshots. Precise typographic grid, strong numbered section hierarchy 01 / 02 / 03 / 04, restrained original line icons if useful. Bold modern Chinese sans-serif headings, comfortable readable Chinese body copy, monospace terminal commands. Dense enough to explain the product but organized and spacious. No oversized empty background. No floating decorative filler text. At least half the poster area should be real screenshot previews, with their captions and supporting details outside their frames. Primary marketing text must be substantially larger than screenshot microtext.
+
+Portrait reading sequence:
+TOP HEADER, around 12–15% of height:
+"QOJ Contest" at top with a small green badge "v1.2.2".
+Large 2-line headline:
+"QOJ 原生参赛"
+"熟悉的赛场体验"
+Supporting line:
+"原生 VP · 正式参赛 · Vue 3"
+Smaller introduction:
+"题面、榜单、提交与队伍协作，集中在一个界面。"
+
+SECTION 01, main full-width feature with largest screenshot:
+Heading "01  参赛信息，一屏掌握"
+Body "支持 QOJ 原生 VP 与正式参赛；报名、计时和评测以 QOJ 为准。"
+Place Image 1 as a generously sized real preview. Crop to the upper useful overview content if necessary to make room, preserving navigation, demo banner, overview scoreboard, submission verdicts and contest information. Caption "比赛概览 · 提交结果 · 题目状态".
+Additional compact line "支持 HTML / PDF 题面、比赛附件，以及本工具提交记录的代码查看。"
+
+MIDDLE TWO-COLUMN ROW, two clearly separate feature sections with preview panels:
+Section 02:
+Heading "02  榜单跟随 QOJ"
+Use Image 2 as the real scoreboard preview, cropped to the scoreboard table and relevant app heading. Keep the actual table and scores, do not invent frozen or first-solve cells in this demo screenshot.
+Body "读取 QOJ 榜单与封榜状态，支持 Training Mode 榜单。"
+Section 03:
+Heading "03  一队三机，分工协作"
+Use Image 3 as the real team-management preview, focused on the Aurora team card, captain and two member device rows and dissolve control. Preserve the actual demo invitation if visible.
+Body, 3 short lines:
+"1 台队长机 + 最多 2 台队员机"
+"队长：管理参赛、提交代码、上传共享文件"
+"队员：只读查看题目、榜单和共享文件"
+
+SECTION 04, wide lower feature combining real print preview and command examples:
+Heading "04  终端提交，虚拟打印"
+Use Image 4 as a real preview panel, cropped to the Printing section, upload controls and A.cpp / team-notes.txt file list. It must be visibly this supplied screenshot.
+Alongside or immediately below it, add a dark compact terminal panel with these exact two lines:
+"$ submit A.cpp"
+"$ printfile notes.txt"
+Supporting body, legibly wrapped:
+"队长完成配置并在网页开始参赛后，即可使用终端命令。"
+"虚拟打印将文件保存在反代服务，供本队查看、下载，不连接实体打印机。"
+
+BOTTOM STRIP AND FOOTER:
+Small feature strip: "本地部署 · 局域网访问 · 队伍权限隔离"
+Attribution: "Developed with ♥ by minstdfx · Assisted by ChatGPT"
+Link text: "github.com/minstdfx"
+Small note: "画面来自离线 Demo，数据均为虚构演示。"
+Small note: "独立项目 · 非 QOJ 官方出品"
+
+Text constraints:
+Render the specified Chinese and English text accurately and legibly. No invented slogans, claims of stability, adoption figures, endorsements, download numbers, nonexistent features, or extra English filler. Never render the word DOMjudge anywhere in the final image, including headings, tiny footnotes, generated URLs or within previews. The only project display name is QOJ Contest.
+No real contest information, real account credentials, number 3962, copyrighted logos/mascots, platform logos, QR codes, trophies, balloons, or physical printers. Do not mention open-source license terms or imply official affiliation. Do not use the earlier landscape poster as a screenshot insert. Deliver a single polished tall poster with all four supplied screenshots embedded and all major text fully inside the canvas.

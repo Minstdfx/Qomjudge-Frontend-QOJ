@@ -48,6 +48,20 @@ def _upstream_url(path: str, base: str = ORIGIN + "/") -> str:
     return urlunsplit(("https", "qoj.ac", parsed.path or "/", parsed.query, ""))
 
 
+def _problem_submission_url(value: str, base: str, contest_id: int, problem_id: int) -> str:
+    """Accept native language variants without changing the problem identity.
+
+    QOJ posts localized statements back to /statement/en (or /default), not
+    necessarily the bare problem URL. Keep the live form's URL and CSRF token
+    together; only the language suffix may vary, never the contest or problem.
+    """
+    target = _upstream_url(value, base)
+    route = rf"/(?:contest/{int(contest_id)}/)?problem/{int(problem_id)}(?:/statement/[A-Za-z0-9_-]+)?/?"
+    if not re.fullmatch(route, urlsplit(target).path):
+        raise QOJError("QOJ 提交表单地址与所选题目不一致。", 422)
+    return target
+
+
 def _proxy_url(value: str, base: str) -> str:
     value = html.unescape(value.strip())
     if not value or value.startswith("#"):
@@ -678,9 +692,8 @@ class QOJClient:
             token = form.select_one('input[name="_token"]')
             if not token or not token.get("value"):
                 raise QOJError("QOJ 提交表单缺少 CSRF token，请刷新后重试。", 502)
-            action = _upstream_url(form.get("action") or response.url, response.url)
-            if urlsplit(action).path not in (f"/problem/{int(pid)}", f"/contest/{int(contest_id)}/problem/{int(pid)}"):
-                raise QOJError("QOJ 提交表单地址与所选题目不一致。", 422)
+            page_url = _problem_submission_url(response.url, ORIGIN + "/", contest_id, pid)
+            action = _problem_submission_url(form.get("action") or page_url, page_url, contest_id, pid)
             list_path = f"/contest/{int(contest_id)}/submissions"
             before = self._page(list_path)
             if expected_username and self.username != expected_username:

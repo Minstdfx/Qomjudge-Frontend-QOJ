@@ -27,7 +27,7 @@ class BrowserNative(NativeClient):
         result = super().snapshot(mode, status)
         result["scoreboard"][0]["penalty"] = "5:40"
         result["scoreboard"][0]["problem_stats"]["1"].update(
-            display="?3", text="?3", solved=False, pending=3)
+            display="?3", text="?3", solved=False, pending=3, attempts=3)
         result.update(scoreboard_source="qoj-pc2" if mode == "official" else "qoj",
                       scoreboard_url="https://qoj.ac/results/QOJ1802?mode=pc2" if mode == "official"
                       else "https://qoj.ac/contest/1802/standings")
@@ -196,6 +196,15 @@ def main():
             expect(captain.locator("#scoreboard-original")).to_have_attribute("href", "https://qoj.ac/contest/1802/standings")
             expect(captain.locator("#scoreboard-original")).to_have_attribute("rel", "noopener noreferrer")
             expect(captain.locator("#scoreboard-source-label")).to_have_text("QOJ 榜单")
+            summary = captain.locator('#scoreboard-table [data-problem-totals="1"]')
+            expect(summary).to_have_text('0 / 3')
+            upstream.snapshots['vp']['scoreboard_problem_totals'] = {'1': {'solved': 7, 'submissions': 19}}
+            captain.locator('#scoreboard-refresh').click()
+            expect(summary).to_have_text('7 / 19')
+            expect(summary).to_have_attribute('title', '通过队伍数 / 提交次数：7 / 19（QOJ 公开汇总）')
+            upstream.snapshots['vp'].pop('scoreboard_problem_totals')
+            captain.locator('#scoreboard-refresh').click()
+            expect(summary).to_have_text('0 / 3')
             captain.screenshot(path=str(artifacts / "native-scoreboard-desktop.png"), full_page=True)
             normal_vp_board = upstream.snapshots["vp"]["scoreboard"]
             first_blood_cases = [

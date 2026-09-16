@@ -2,42 +2,56 @@
   "mode": "offline-demo",
   "contest_id": 1,
   "private_data_used": false,
+  "captured_at": "2026-09-15T17:38:34.845664+00:00",
+  "project_version": "1.2.2",
+  "frontend_entry_sha256": "362fcd6caf647010270019aad4e9dd2d09adb3b7bdeacd5e60d7d5030c51dcdc",
+  "branding_check_passed": true,
   "external_requests": 0,
   "images": [
     {
       "file": "01-overview.png",
       "caption": "队伍概览：模拟 AC / WA / TLE 与本队成绩",
-      "sha256": "e68111c8bae20a2838bdc66c0eb5729ebea2227eb55705c4f7f10477923d06e3"
+      "sha256": "af8a229aaf9070b5ac396ec7696f397aff26e684500b0c03f97bec70ab968ca7"
     },
     {
       "file": "02-problem.png",
       "caption": "题面：离线 A + B 示例",
-      "sha256": "1f73d1bc2f6d83f0272d9fbf07442cce5b6d1835c1acec7f965290e0cc23161b"
+      "sha256": "e4d553ddc0627d731995cbe5c67312a6ee7c677e7ee57e38e36274bafc6d2167"
     },
     {
       "file": "03-scoreboard.png",
       "caption": "榜单：六支虚构队伍的模拟成绩",
-      "sha256": "4b1e55c5a63814a6a4b8c940b111121333481b7bb70c40c78888d783a9239132"
+      "sha256": "a6a6792a7f0f0461ed489e2735f0442a6fd8ab4cbdc6e44956dd9b9e972a19ca"
     },
     {
       "file": "04-source-code.png",
       "caption": "提交记录与代码查看：仅含生成的示例代码",
-      "sha256": "4c4589cdb8f658c92ef78f0793b72db38cb0fa5f41391658e935bf88ec017a4e"
+      "sha256": "abeefac82ad25508ed4cdf33ccc1161c64ac20d6dc965e0f66186026ea50b6bc"
     },
     {
       "file": "05-printing.png",
       "caption": "虚拟打印：队长上传的测试文件",
-      "sha256": "0b829b6175def45d3ee38de0cd7f326570c49869061792df4ebccc468af9f377"
+      "sha256": "dd8c1898db61c8396773422ff6eacbfefcfda1ae9c17f7964f8def99790b7f47"
     },
     {
       "file": "06-team.png",
       "caption": "队伍协作：一名队长、两名队员；邀请码仅用于临时演示",
-      "sha256": "1b2ed5490071ab468ac3a6adb16c3d965463c7a6d5e0160d190392f62cdb80cf"
+      "sha256": "2041f101414e7ce64bdc9405402c7238a5a221f9f2f81482408485f6864de3f4"
     },
     {
       "file": "07-member-mobile.png",
       "caption": "手机窄屏：队员查看共享打印文件",
-      "sha256": "f96459f98e09e99ce08ca5d487ddd73ae682589349af2360cb4a6ea8266829ed"
+      "sha256": "91d0fcced37848cbc477e43fa11ac288402f44a39de6100f5f89dd5963e6992e"
+    },
+    {
+      "file": "08-attachments.png",
+      "caption": "比赛附件：离线样例压缩包与说明文件",
+      "sha256": "a40701b666626d14c8af09a8355c2649c5b334f2dedd9cdae6bd7a7aa1547d7b"
+    },
+    {
+      "file": "09-submit.png",
+      "caption": "提交代码：离线示例源码与语言选择；未发送提交",
+      "sha256": "3c9c42cf1a8245854c5874ad31d2072a03141bd308162107241ece23928064bb"
     }
   ]
 }

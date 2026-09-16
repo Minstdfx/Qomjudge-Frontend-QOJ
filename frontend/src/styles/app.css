@@ -310,7 +310,7 @@ tbody tr:hover{background:#e8eff5}
 .file-picker small{display:block;font-size:9px;font-weight:400;color:#95a6b5;margin-top:3px}
 .file-picker .button{margin-left:auto}
 .code-label{display:flex;align-items:baseline;justify-content:space-between}
-.code-input{width:100%;font-size:12px;font-family:ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace;line-height:1.65;tab-size:4;background:#fafcfd;min-height:200px}
+.code-input{width:100%;font-size:12px;font-family:Consolas,"Microsoft YaHei","微软雅黑",ui-monospace,"Liberation Mono",monospace;line-height:1.65;tab-size:4;background:#fafcfd;min-height:200px}
 .modal-footer{display:flex;justify-content:flex-end;gap:10px;padding:16px 25px;background:#f9fbfc;border-top:1px solid var(--line)}
 .confirm-modal .modal-body p{font-size:13px;line-height:1.8}
 

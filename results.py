@@ -115,10 +115,22 @@ def parse_results_table(source, contest_id, problems, username):
                 raise _error()
 
     result = []
+    problem_totals = {}
     for row in table.select("tr"):
         if row is heading_row or row.find_parent("table") is not table:
             continue
         cells = row.find_all("td", recursive=False)
+        if (len(cells) == len(names) and not _text(cells[0])
+                and _text(cells[1]) == "Submitted/1st Yes/Total Yes"
+                and all(cell.get("colspan", "1") == "1" and cell.get("rowspan", "1") == "1" for cell in cells)):
+            # The published footer counts attempts, not distinct submitting teams.
+            for label, cell in zip(columns, cells[4:-1]):
+                match = re.fullmatch(r"([0-9]+|\?+|--)/(?:[0-9]+|\?+|--)/([0-9]+|\?+|--)", _text(cell))
+                problem_totals[str(labels[label])] = {
+                    "solved": int(match[2]) if match and match[2].isdigit() else None,
+                    "submissions": int(match[1]) if match and match[1].isdigit() else None,
+                }
+            continue
         if not cells or not _text(cells[0]):
             continue  # Native totals/footer rows have no rank.
         if (len(cells) != len(names) or not _text(cells[1])
@@ -134,7 +146,8 @@ def parse_results_table(source, contest_id, problems, username):
                        "is_self": is_self, "problem_stats": stats})
         if len(result) > 20000:
             raise _error()
-    return {"rows": result, "ruleset": "ICPC", "finalized": None, "source": "qoj-pc2"}
+    return {"rows": result, "ruleset": "ICPC", "finalized": None, "source": "qoj-pc2",
+            "problem_totals": problem_totals}
 
 
 def _external_error():
@@ -226,9 +239,16 @@ def parse_external_results_table(source, contest_id, problems, username):
     if (len(headings) != len(problems) + 5
             or any(cell.get("colspan", "1") != "1" or cell.get("rowspan", "1") != "1" for cell in headings)):
         raise _external_error()
+    problem_totals = {}
     for heading, problem in zip(headings[2:-3], problems):
-        if re.fullmatch(re.escape(problem["label"]) + r"(?:\s+[0-9]+/[0-9]+)?", _text(heading)) is None:
+        summary = re.fullmatch(re.escape(problem["label"]) + r"(?:\s+([0-9]+|\?+|--)/([0-9]+|\?+|--))?", _text(heading))
+        if summary is None:
             raise _external_error()
+        if summary[1] is not None:
+            problem_totals[str(problem["id"])] = {
+                "solved": int(summary[1]) if summary[1].isdigit() else None,
+                "submissions": int(summary[2]) if summary[2].isdigit() else None,
+            }
         for link in heading.select("a[href]"):
             target = urlsplit(urljoin("https://qoj.ac/", link["href"]))
             match = re.fullmatch(r"(?:/contest/([0-9]+))?/problem/([0-9]+)/?", target.path)
@@ -257,4 +277,5 @@ def parse_external_results_table(source, contest_id, problems, username):
                        "is_self": is_self, "problem_stats": stats})
         if len(result) > 20000:
             raise _external_error()
-    return {"rows": result, "ruleset": "ICPC", "finalized": None, "source": "qoj-external"}
+    return {"rows": result, "ruleset": "ICPC", "finalized": None, "source": "qoj-external",
+            "problem_totals": problem_totals}

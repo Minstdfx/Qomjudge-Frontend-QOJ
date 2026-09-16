@@ -1,0 +1,38 @@
+Generation mode: built-in image_gen
+
+Use case: ads-marketing.
+Create one finished, polished Chinese promotional poster for the independent software project "QOJ Contest", release v1.2.2. Landscape 3:2 composition, ideally 1920x1280 or larger. A designed poster, not a photograph of a poster. It will be shared with Chinese competitive programmers.
+
+Art direction: sophisticated editorial software launch graphic. Warm ivory paper background, deep charcoal navy typography, vivid accepted-green accents and restrained sky-blue frozen-scoreboard accents inspired by programming contest result cells. Crisp original geometric composition, generous negative space, oversized typographic hierarchy, thin precision rules, subtle soft shadows, very light paper grain. No purple gradient, no neon cyberpunk, no stock illustration, no balloons or trophies, no real-world photograph. Typography in a highly readable modern Chinese sans-serif with clean monospace for commands. Meticulous alignment and ample margins.
+
+Composition: small project name and release tag at the top. Strong large two-line headline in the upper-left/upper-middle area. A spacious original browser-style contest interface illustration dominates the center and lower half, shown almost front-on with at most a very slight perspective. A compact dark terminal card overlaps its lower-right corner, deliberately placed so it does not hide important scoreboard information. Four compact feature callouts align along the lower edge above the fine-print footer. Leave all text fully inside the frame and legible.
+
+Exact main text, spell and render verbatim, do not invent additional marketing claims:
+Top identity: "QOJ Contest" and a small "v1.2.2".
+Large main headline, two lines:
+"QOJ 原生参赛"
+"熟悉的赛场体验"
+Subtitle: "VP / 正式比赛 · Vue 3 前端"
+Four feature callouts:
+"1 台队长机 + 2 台队员机"
+"题面 · 榜单 · 附件"
+"终端提交"
+"共享虚拟打印"
+
+The central browser illustration represents this project's independently implemented light contest interface: a flat charcoal top navigation bar reading "QOJ Contest", "Contest", "Problemset", "Submissions", "Scoreboard", "Printing", "Team"; active Scoreboard tab and small green Submit button. A light blue scoreboard heading and neat white table with green accepted cells, dark green first-to-solve cell, blue frozen pending cells, and a restrained coral incorrect cell. Clearly label the panel "DEMO SCOREBOARD" and "示意界面 · 虚构数据". No URLs in the browser, no real contest number or real contest names. Avoid dense illegible microtext. Use only three fictitious teams and six problems. Exact table:
+headers: Rank | Team | Solved | Penalty | A | B | C | D | E | F
+row 1: 1 | Aurora | 3 | 96 | 12 | 28 | 56 | ?2 | blank | blank
+row 2: 2 | Bytecraft | 2 | 70 | 20 | blank | 50 | blank | ?1 | blank
+row 3: 3 | Orbit | 1 | 35 | blank | 35 | blank | blank | blank | -1
+Accepted numbered problem cells green; Aurora A=12 deep green to denote first solve; ?2 and ?1 cells blue; Orbit F=-1 coral; blank cells white. Header letters A B C D E F. Keep the scoreboard orderly rather than ornamental. Add a small green status badge reading "AC Accepted" near the terminal illustration or within the UI, without inventing any performance metrics.
+Dark terminal card text only:
+"$ submit A.cpp"
+"$ printfile notes.txt"
+A small label underneath reads "提交代码 · 队内共享文件".
+
+Footer, small but readable:
+"Developed with ♥ by minstdfx · Assisted by ChatGPT"
+"github.com/minstdfx"
+"独立项目 · 非 QOJ 官方出品"
+
+Constraints: All visual assets must be freshly original. No QOJ, ICPC, Vue, GitHub or OpenAI logos, mascots, copied proprietary assets, watermarks, QR codes, fake endorsements, popularity metrics or claims of official affiliation. Only use the exact neutral display names in the specified text. Never render the word DOMjudge anywhere in the image. Do not include any real user data, account information, source code beyond the two short sample commands, real contest details, or the number 3962. All data are synthetic. Virtual printing means sharing files within the team; do not depict a physical printer. Prioritize beautiful composition and accurate Chinese typography.

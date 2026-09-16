@@ -23,7 +23,7 @@ export function verdictInfo(value, submission) {
     RE: 'Runtime Error', CE: 'Compile Error', PE: 'Presentation Error', JE: 'Judgement Failed',
   };
   const code = Object.hasOwn(codes, key) ? codes[key] : undefined;
-  return { code, label: code ? `${code} · ${names[code]}` : key === 'failed' ? 'Submission Failed' : raw, cls: 'wrong', icon: '×' };
+  return { code, label: code ? `${code} · ${names[code]}` : key === 'failed' ? '提交失败 · Submission Failed' : raw, cls: 'wrong', icon: '×' };
 }
 
 // Remove only an entire synonymous verdict. Compiler output and other

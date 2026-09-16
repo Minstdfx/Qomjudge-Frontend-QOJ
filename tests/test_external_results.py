@@ -34,6 +34,19 @@ def parse(source=FIXTURE, problems=PROBLEMS, username="fixture-team"):
 
 
 class ExternalResultsTests(unittest.TestCase):
+    def test_published_header_totals_are_preserved_instead_of_counting_displayed_rows(self):
+        self.assertEqual(parse()["problem_totals"], {
+            "1001": {"solved": 0, "submissions": 1},
+            "1002": {"solved": 24, "submissions": 36},
+            "1003": {"solved": 17, "submissions": 31},
+        })
+
+    def test_hidden_unknown_and_missing_header_totals(self):
+        source = FIXTURE.replace('24/36', '?/?<span hidden>100/101</span>')
+        self.assertEqual(parse(source)["problem_totals"]["1002"], {"solved": None, "submissions": None})
+        source = FIXTURE.replace('B<br>24/36', 'B')
+        self.assertNotIn("1002", parse(source)["problem_totals"])
+
     def test_actual_external_layout_preserves_explicit_first_blood_and_totals(self):
         parsed = parse()
         self.assertEqual(parsed["source"], "qoj-external")

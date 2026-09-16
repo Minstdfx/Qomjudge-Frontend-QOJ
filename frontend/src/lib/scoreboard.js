@@ -38,6 +38,49 @@ export function scoreboardSourceLabel(c) {
   return 'QOJ 榜单';
 }
 
+// Header totals use the whole published board, even above the single-team view.
+// Prefer QOJ's own totals: summing displayed cells can miss unlisted submissions.
+export function scoreboardProblemTotals(c) {
+  const result = scoreboardResult(c);
+  if (!c.canRead || result.error) return {};
+  const count = (value) => Number.isSafeInteger(value) && value >= 0 ? value : null;
+  const published = c.part?.scoreboard_problem_totals;
+  const totals = {};
+  for (const problem of c.problems) {
+    const upstream = published?.[problem.id];
+    let solved = 0;
+    let submissions = 0;
+    if (upstream && typeof upstream === 'object' && !Array.isArray(upstream)) {
+      solved = count(upstream.solved);
+      submissions = count(upstream.submissions);
+    } else {
+      for (const row of result.rows) {
+        const stat = row.problem_stats?.[problem.id] || {};
+        const display = String(stat.display ?? stat.text ?? '').trim();
+        // Pending/frozen markers are never evidence of a solve.
+        if (stat.solved === true && (c.state?.demo || !stat.pending && !display.startsWith('?'))) solved++;
+        let attempts = count(c.state?.demo ? stat.submissions ?? stat.attempts : stat.attempts);
+        if (attempts === null) {
+          const marker = /^([+?−-])(\d*)(?:\s|$)/u.exec(display);
+          const pc2 = /^(\d+)\/(?:\d+|--|\?+)$/.exec(display);
+          if (pc2) attempts = count(Number(pc2[1]));
+          else if (marker && marker[1] === '+') attempts = count(Number(marker[2] || 0) + 1);
+          else if (marker && marker[2]) attempts = count(Number(marker[2]));
+          else if ((!display || display === '-') && !stat.pending && !stat.solved) attempts = 0;
+        }
+        submissions = submissions === null || attempts === null ? null : count(submissions + attempts);
+      }
+      if (!c.state?.demo && c.part?.ruleset && c.part.ruleset !== 'ICPC') solved = null;
+    }
+    totals[problem.id] = {
+      solved, submissions,
+      text: `${solved ?? '—'} / ${submissions ?? '—'}`,
+      title: `通过队伍数 / 提交次数：${solved ?? '未知'} / ${submissions ?? '未知'}（${upstream ? 'QOJ 公开汇总' : '当前可见榜单'}）`,
+    };
+  }
+  return totals;
+}
+
 export function scoreboardCell(c, stat = {}) {
   if (!c.state?.demo) {
     const text = String(stat.display ?? stat.text ?? '');

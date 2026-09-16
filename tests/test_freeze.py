@@ -47,7 +47,7 @@ class FreezeTests(unittest.TestCase):
         self.assertEqual(at_cutoff["unfreeze_at"], START + DURATION)
         self.assertEqual((at_cutoff["solved"], at_cutoff["penalty"]), (0, 0))
         self.assertEqual(at_cutoff["problem_stats"]["10"], {
-            "attempts": 2, "wrong": 1, "pending": 1, "solved": False, "time": None,
+            "attempts": 2, "wrong": 1, "pending": 1, "solved": False, "time": None, "submissions": 2,
         })
 
     def test_prefreeze_submission_judged_late_remains_visible(self):
@@ -68,8 +68,9 @@ class FreezeTests(unittest.TestCase):
                                      qoj_id=87654321, qoj_url="https://qoj.ac/submission/87654321", message="secret-result-detail")
         self.assertEqual(self.board(CUTOFF + 30), pending)
         public = json.dumps(self.board(CUTOFF + 30))
-        for value in ("87654321", "qoj_url", "qoj_id", "secret-result-detail", "verdict", "submissions"):
+        for value in ("87654321", "qoj_url", "qoj_id", "secret-result-detail", "verdict"):
             self.assertNotIn(value, public)
+        self.assertEqual(self.board(CUTOFF + 30)[0]["problem_stats"]["10"]["submissions"], 1)
 
     def test_hidden_acceptance_does_not_suppress_later_hidden_attempts(self):
         run = self.start()
@@ -78,7 +79,7 @@ class FreezeTests(unittest.TestCase):
             self.submit(run, verdict, CUTOFF + offset)
         public = self.board(CUTOFF + 10)[0]
         self.assertEqual(public["problem_stats"]["10"], {
-            "attempts": 5, "wrong": 1, "pending": 4, "solved": False, "time": None,
+            "attempts": 5, "wrong": 1, "pending": 4, "solved": False, "time": None, "submissions": 5,
         })
         actual = score(PROBLEMS, self.store.submissions(run["id"]))
         self.assertEqual(actual["solved"], 1)
@@ -101,8 +102,21 @@ class FreezeTests(unittest.TestCase):
         row = self.board(CUTOFF + 10)[0]
         self.assertEqual((row["solved"], row["penalty"]), (1, 2))
         self.assertEqual(row["problem_stats"]["10"], {
-            "attempts": 1, "wrong": 0, "pending": 0, "solved": True, "time": 2,
+            "attempts": 1, "wrong": 0, "pending": 0, "solved": True, "time": 2, "submissions": 3,
         })
+
+    def test_total_record_count_stays_constant_when_hidden_acceptance_is_revealed(self):
+        run = self.start()
+        for offset, verdict in enumerate(("AC", "CE", "WA", "AC", "PENDING")):
+            self.submit(run, verdict, CUTOFF + offset)
+        frozen = self.board(CUTOFF + 10)[0]
+        self.assertEqual((frozen["solved"], frozen["penalty"]), (0, 0))
+        self.assertEqual(frozen["problem_stats"]["10"]["submissions"], 5)
+        self.assertEqual(frozen["problem_stats"]["10"]["pending"], 5)
+        revealed = self.board(DURATION)[0]
+        self.assertEqual(revealed["solved"], 1)
+        self.assertEqual(revealed["problem_stats"]["10"]["submissions"], 5)
+        self.assertEqual(revealed["problem_stats"]["10"]["attempts"], 1)
 
     def test_own_public_row_and_ranking_use_same_filtered_result_as_other_viewers(self):
         own = self.start()
@@ -190,18 +204,22 @@ class FreezeTests(unittest.TestCase):
         self.assertIsNone(row["freeze_at"])
         self.assertIsNone(row["unfreeze_at"])
 
-    def test_disabled_by_default_preserves_original_score_and_cell_shape(self):
+    def test_disabled_by_default_preserves_original_score_and_adds_record_counts(self):
         run = self.store.start("alice", "contest", "Alice", DURATION, now=START)
         self.assertEqual(run["freeze_seconds"], 0)
         self.submit(run, "WA", CUTOFF)
         self.submit(run, "AC", CUTOFF + 1)
         row = self.board(CUTOFF + 2)[0]
         expected = score(PROBLEMS, self.store.submissions(run["id"]))
-        self.assertEqual({key: row[key] for key in expected}, expected)
+        self.assertEqual((row["solved"], row["penalty"]), (expected["solved"], expected["penalty"]))
+        self.assertEqual({pid: {key: value for key, value in item.items() if key != "submissions"}
+                          for pid, item in row["problem_stats"].items()}, expected["problem_stats"])
         self.assertFalse(row["frozen"])
         self.assertIsNone(row["freeze_at"])
         self.assertIsNone(row["unfreeze_at"])
-        self.assertEqual(set(row["problem_stats"]["10"]), {"attempts", "wrong", "pending", "solved", "time"})
+        self.assertEqual(set(row["problem_stats"]["10"]), {"attempts", "wrong", "pending", "solved", "time", "submissions"})
+        self.assertEqual(row["problem_stats"]["10"]["submissions"], 2)
+        self.assertEqual(row["problem_stats"]["20"]["submissions"], 0)
 
     def test_short_run_clamps_freeze_to_whole_duration(self):
         run = self.start(duration=90, freeze=600)

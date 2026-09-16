@@ -1,11 +1,12 @@
 <script setup>
 import { computed } from 'vue';
 import { useContest } from '../composables/useContest.js';
-import { scoreboardCell } from '../lib/scoreboard.js';
+import { scoreboardCell, scoreboardProblemTotals } from '../lib/scoreboard.js';
 import ProblemLetter from './ProblemLetter.vue';
 
 const props = defineProps({ rows: { type: Array, default: () => [] } });
 const c = useContest();
+const totals = computed(() => scoreboardProblemTotals(c));
 const tableRows = computed(() => !c.canRead ? [] : props.rows.map((row) => ({
   row,
   cells: c.problems.map((problem) => ({
@@ -25,6 +26,8 @@ const problemHref = (problem) => `#problems/${encodeURIComponent(problem.id)}`;
           <a :href="problemHref(problem)" :title="problem.title" @click.prevent="c.navigate('problems', problem.id)">
             <ProblemLetter :problem="problem" />
           </a>
+          <span v-if="totals[problem.id]" class="problem-totals" :data-problem-totals="problem.id"
+                :title="totals[problem.id].title" :aria-label="totals[problem.id].title">{{ totals[problem.id].text }}</span>
         </th>
       </tr>
     </thead>
@@ -48,3 +51,7 @@ const problemHref = (problem) => `#problems/${encodeURIComponent(problem.id)}`;
     </tbody>
   </table>
 </template>
+
+<style scoped>
+.problem-totals { display: block; margin-top: 5px; font-size: 11px; line-height: 1.3; font-weight: 500; white-space: nowrap; color: #4f6275; font-variant-numeric: tabular-nums; }
+</style>

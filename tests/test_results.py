@@ -34,6 +34,18 @@ def parse(source=FIXTURE, problems=PROBLEMS, username="fixture-team"):
 
 
 class ResultsTableTests(unittest.TestCase):
+    def test_published_footer_counts_all_attempts_not_teams_in_rows(self):
+        totals = parse()["problem_totals"]
+        self.assertEqual(totals["1002"], {"solved": 24, "submissions": 36})
+        self.assertEqual(totals["1001"], {"solved": 0, "submissions": 1})
+        reordered = parse(problems=list(reversed(PROBLEMS)))["problem_totals"]
+        self.assertEqual(reordered, totals)
+
+    def test_footer_unknown_counts_stay_unknown_and_hidden_counts_are_ignored(self):
+        unknown = FIXTURE.replace('36/14/24', '?/--/?<span hidden>999/1/999</span>')
+        self.assertEqual(parse(unknown)["problem_totals"]["1002"], {"solved": None, "submissions": None})
+        self.assertEqual(parse(FIXTURE.replace(FOOTER, ''))["problem_totals"], {})
+
     def test_actual_pc2_layout_preserves_upstream_totals_and_cells(self):
         parsed = parse()
         self.assertEqual(parsed["source"], "qoj-pc2")

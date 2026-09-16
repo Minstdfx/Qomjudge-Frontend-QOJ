@@ -9,7 +9,7 @@ from flask import Flask
 from requests.structures import CaseInsensitiveDict
 
 from qoj import QOJError
-from statements import pdf_response, statement_pdfs
+from statements import StatementPDFCache, pdf_response, statement_pdfs
 
 
 PDF = b"%PDF-1.7\n" + bytes(range(256)) * 600 + b"\n%%EOF\n"
@@ -289,6 +289,105 @@ class PDFResponseTests(unittest.TestCase):
         self.assertNotIn("\n", response.headers["Content-Disposition"])
         self.assertNotIn("X-Evil", response.headers)
         response.close()
+
+
+class PDFCacheTests(unittest.TestCase):
+    def response(self, cache, upstream, owner="owner", problem_id=10, url="fixture", headers=None):
+        app = Flask(__name__)
+        with app.test_request_context("/statement.pdf", headers=headers or {}):
+            from flask import request
+            return cache.response(owner, problem_id, url, lambda: upstream, request.environ)
+
+    def test_cache_reuses_complete_bytes_and_supports_ranges_and_conditional_requests(self):
+        cache = StatementPDFCache()
+        upstream = Upstream()
+        first = self.response(cache, upstream)
+        self.assertEqual(first.get_data(), PDF)
+        self.assertEqual(upstream.close_count, 1)
+        etag = first.headers["ETag"]
+        second = self.response(cache, None)
+        self.assertEqual(second.get_data(), PDF)
+        self.assertEqual(second.headers["ETag"], etag)
+        partial = self.response(cache, None, headers={"Range": "bytes=2-10", "If-Range": etag})
+        self.assertEqual(partial.status_code, 206)
+        self.assertEqual(partial.get_data(), PDF[2:11])
+        self.assertEqual(partial.headers["Content-Range"], f"bytes 2-10/{len(PDF)}")
+        changed = self.response(cache, None, headers={"Range": "bytes=2-10", "If-Range": '"old"'})
+        self.assertEqual(changed.status_code, 200)
+        self.assertEqual(changed.get_data(), PDF)
+        unchanged = self.response(cache, None, headers={"If-None-Match": etag})
+        self.assertEqual(unchanged.status_code, 304)
+
+    def test_cache_expires_and_evicts_least_recently_used_documents_within_budget(self):
+        now = [1]
+        body = b"%PDF-1.7\n%%EOF\n"
+        cache = StatementPDFCache(max_bytes=len(body) * 2, max_entries=2, ttl=10, clock=lambda: now[0])
+        for url in ("a", "b"):
+            self.assertEqual(self.response(cache, Upstream(body), url=url).get_data(), body)
+        self.response(cache, None, url="a")  # b is now the least recently used.
+        self.response(cache, Upstream(body), url="c")
+        self.assertEqual(cache._bytes, len(body) * 2)
+        self.response(cache, None, url="a")
+        reloaded = Upstream(body)
+        self.response(cache, reloaded, url="b")
+        self.assertEqual(reloaded.close_count, 1)
+        now[0] = 12
+        expired = Upstream(body)
+        self.response(cache, expired, url="b")
+        self.assertEqual(expired.close_count, 1)
+        self.assertEqual(cache._bytes, len(body))
+
+    def test_owner_problem_invalidation_does_not_remove_other_teams_or_problems(self):
+        cache = StatementPDFCache()
+        for owner, problem in (("a", 10), ("a", 11), ("b", 10)):
+            self.response(cache, Upstream(), owner=owner, problem_id=problem)
+        cache.invalidate("a", 10)
+        self.response(cache, None, owner="a", problem_id=11)
+        self.response(cache, None, owner="b", problem_id=10)
+        reloaded = Upstream()
+        self.response(cache, reloaded, owner="a", problem_id=10)
+        self.assertEqual(reloaded.close_count, 1)
+        cache.invalidate("a")
+        self.assertEqual(cache._bytes, len(PDF))
+        self.response(cache, None, owner="b", problem_id=10)
+
+    def test_truncated_and_interrupted_downloads_do_not_poison_cache(self):
+        for upstream in (Upstream(headers={"Content-Length": str(len(PDF) + 10)}),
+                         Upstream(raw=RecordingRaw(fail_at=5)),
+                         Upstream(b"not a PDF"), Upstream(status=503)):
+            with self.subTest(upstream=upstream):
+                cache = StatementPDFCache()
+                with self.assertRaises(QOJError):
+                    self.response(cache, upstream)
+                self.assertEqual(upstream.close_count, 1)
+                self.assertEqual(cache._bytes, 0)
+                good = Upstream()
+                self.assertEqual(self.response(cache, good).get_data(), PDF)
+                self.assertEqual(good.close_count, 1)
+
+    def test_oversized_known_length_document_keeps_streaming_without_being_cached(self):
+        cache = StatementPDFCache(max_document_bytes=100)
+        upstream = Upstream()
+        response = self.response(cache, upstream)
+        self.assertEqual(upstream.raw.bytes_read, 5)
+        self.assertTrue(response.is_streamed)
+        self.assertEqual(response.get_data(), PDF)
+        response.close()
+        self.assertEqual(upstream.close_count, 1)
+        self.assertEqual(cache._bytes, 0)
+
+    def test_oversized_unknown_length_document_replays_prefix_and_closes_on_disconnect(self):
+        for disconnect in (False, True):
+            cache = StatementPDFCache(max_document_bytes=100)
+            upstream = Upstream()
+            del upstream.headers["Content-Length"]
+            response = self.response(cache, upstream)
+            self.assertLess(upstream.raw.bytes_read, len(PDF))
+            if not disconnect:
+                self.assertEqual(response.get_data(), PDF)
+            response.close()
+            self.assertEqual(upstream.close_count, 1)
+            self.assertEqual(cache._bytes, 0)
 
 
 if __name__ == "__main__":

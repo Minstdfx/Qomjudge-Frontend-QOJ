@@ -151,6 +151,7 @@ class NativeAPITests(unittest.TestCase):
         self.assertFalse((state.get("contest") or {}).get("problems"))
         self.assertFalse((state.get("contest") or {}).get("attachments"))
         self.assertFalse(state.get("scoreboard"))
+        self.assertFalse(state.get("participation", {}).get("scoreboard_problem_totals"))
         self.assertFalse(state.get("submissions"))
         self.assertIsNone(state.get("run"))
         representation = str(state)
@@ -174,6 +175,8 @@ class NativeAPITests(unittest.TestCase):
                 "/qoj/download.php?type=statement&id=1", "/qoj/images/fixture.png"]
 
     def test_unregistered_and_scheduled_snapshots_never_expose_embedded_private_data(self):
+        for snapshot in self.upstream.snapshots.values():
+            snapshot["scoreboard_problem_totals"] = {"1": {"solved": 500, "submissions": 1000}}
         member = self.member()
         for mode in ("vp", "official"):
             self.ok(self.post("/api/mode", {"mode": mode}))

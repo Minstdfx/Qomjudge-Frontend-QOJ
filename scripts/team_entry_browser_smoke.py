@@ -45,7 +45,7 @@ def assert_locked(page, tab="participation"):
     for name in ("attachments-table", "prints-table", "scoreboard-table", "team-scoreboard"):
         expect(page.locator(f"#{name}")).to_have_text("")
     expect(page.locator("#print-content")).to_have_value("")
-    for text in ("A + B Problem", "DOMjudge Practice Contest", "team-only-note.txt"):
+    for text in ("A + B Problem", "QOJ Practice Contest", "team-only-note.txt"):
         assert text not in page.locator("body").inner_text(), text
 
 

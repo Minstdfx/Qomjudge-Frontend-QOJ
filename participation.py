@@ -178,6 +178,7 @@ def read_scoreboard(client, page, contest_id, problems):
         messages = {"qoj-pc2": "QOJ PC2 / Training Mode 榜单",
                     "qoj-external": "QOJ External Standings", "qoj": "QOJ 原生榜单"}
         result.update(scoreboard=parsed["rows"], scoreboard_available=True, scoreboard_status="available",
+                      scoreboard_problem_totals=parsed.get("problem_totals", {}),
                       scoreboard_message=messages[result["scoreboard_source"]],
                       ruleset=parsed["ruleset"], finalized=parsed.get("finalized"))
     except QOJError as exc:

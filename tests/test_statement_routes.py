@@ -2,6 +2,8 @@
 from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from concurrent.futures import ThreadPoolExecutor
+import threading
 import unittest
 
 from requests import Response
@@ -126,18 +128,17 @@ class StatementRoutesTests(unittest.TestCase):
         self.assertEqual(mixed["statement_format"], "html")
         self.assertEqual(len(mixed["statement_pdfs"]), 1)
 
-    def test_captain_and_readonly_member_can_stream_verified_pdf_without_sandbox(self):
+    def test_captain_and_readonly_member_share_verified_cached_pdf_without_sandbox(self):
         member = self.member()
+        body = b"%PDF-" + b"x" * (1024 * 1024)
+        upstream = pdf_response(body)
+        self.upstream.next_response = upstream
         for client in (self.captain, member):
             with self.subTest(member=client is member):
                 document = self.detail(client)["statement_pdfs"][0]
-                body = b"%PDF-" + b"x" * (1024 * 1024)
-                upstream = pdf_response(body)
-                self.upstream.next_response = upstream
                 response = client.get(document["url"], buffered=False,
-                                      headers={"Range": "bytes=1-10", "Accept-Encoding": "gzip"})
+                                      headers={"Accept-Encoding": "gzip"})
                 self.assertEqual(response.status_code, 200)
-                self.assertLess(upstream.raw.bytes_read, len(body))
                 self.assertEqual(response.content_type, "application/pdf")
                 self.assertNotIn("sandbox", response.headers["Content-Security-Policy"])
                 self.assertTrue(response.headers["Content-Disposition"].startswith("inline;"))
@@ -151,8 +152,9 @@ class StatementRoutesTests(unittest.TestCase):
                 self.assertEqual(kwargs["headers"]["Accept-Encoding"], "identity")
                 self.assertEqual(kwargs["headers"]["Referer"], "https://qoj.ac/contest/1802/problem/1")
                 self.assertNotIn("Range", kwargs["headers"])
+        self.assertEqual(len(self.upstream.fetch_calls), 1)
 
-    def test_head_checks_pdf_prefix_and_closes_unconsumed_upstream(self):
+    def test_head_fills_cache_once_and_closes_upstream(self):
         document = self.detail()["statement_pdfs"][0]
         upstream = pdf_response(kind="application/octet-stream")
         self.upstream.next_response = upstream
@@ -162,8 +164,98 @@ class StatementRoutesTests(unittest.TestCase):
         self.assertEqual(response.content_type, "application/pdf")
         self.assertEqual(response.headers["Content-Length"], str(len(PDF)))
         response.close()
-        self.assertEqual(upstream.raw.bytes_read, 5)
+        self.assertEqual(upstream.raw.bytes_read, len(PDF))
         self.assertEqual(upstream.raw.close_count, 1)
+        self.assertEqual(self.captain.get(document["url"]).data, PDF)
+        self.assertEqual(len(self.upstream.fetch_calls), 1)
+
+    def test_range_and_etag_are_served_locally_but_permissions_are_rechecked(self):
+        document = self.detail()["statement_pdfs"][0]
+        self.upstream.next_response = pdf_response()
+        first = self.captain.get(document["url"])
+        self.assertEqual(first.data, PDF)
+        etag = first.headers["ETag"]
+        calls_before = len(self.upstream.participation_calls)
+        result = self.captain.get(document["url"], headers={"Range": "bytes=5-12", "If-Range": etag})
+        self.assertEqual(result.status_code, 206)
+        self.assertEqual(result.data, PDF[5:13])
+        self.assertEqual(result.headers["Cache-Control"], "no-store")
+        unchanged = self.captain.get(document["url"], headers={"If-None-Match": etag})
+        self.assertEqual(unchanged.status_code, 304)
+        self.assertFalse(unchanged.data)
+        self.assertEqual(len(self.upstream.fetch_calls), 1)
+        self.assertEqual(len(self.upstream.participation_calls), calls_before + 2)
+        invalid = self.captain.get(document["url"], headers={"Range": "bytes=9999-10000"})
+        self.assertEqual(invalid.status_code, 416)
+
+    def test_refresh_same_pdf_url_forces_fresh_bytes(self):
+        document = self.detail()["statement_pdfs"][0]
+        self.upstream.next_response = pdf_response()
+        self.assertEqual(self.captain.get(document["url"]).data, PDF)
+        self.assertEqual(self.detail(refresh=True)["statement_pdfs"][0], document)
+        changed = PDF.replace(b"fixture", b"updated")
+        self.upstream.next_response = pdf_response(changed)
+        self.assertEqual(self.captain.get(document["url"]).data, changed)
+        self.assertEqual(len(self.upstream.fetch_calls), 2)
+
+    def test_other_browser_owner_cannot_reuse_cached_private_pdf(self):
+        document = self.detail()["statement_pdfs"][0]
+        self.upstream.next_response = pdf_response()
+        self.assertEqual(self.captain.get(document["url"]).data, PDF)
+        other = self.app.test_client()
+        changed = PDF.replace(b"fixture", b"another")
+        self.upstream.next_response = pdf_response(changed)
+        self.assertEqual(other.get(document["url"]).data, changed)
+        self.assertEqual(self.captain.get(document["url"]).data, PDF)
+        self.assertEqual(len(self.upstream.fetch_calls), 2)
+
+    def test_revoked_access_and_account_change_discard_cached_private_pdf(self):
+        document = self.detail()["statement_pdfs"][0]
+        self.upstream.next_response = pdf_response()
+        self.assertEqual(self.captain.get(document["url"]).data, PDF)
+        self.upstream.authenticated = False
+        self.assertEqual(self.captain.get(document["url"]).status_code, 403)
+        self.assertEqual(self.app.extensions["statement_cache"]._bytes, 0)
+        self.upstream.authenticated = True
+        self.upstream.next_response = pdf_response()
+        self.assertEqual(self.captain.get(document["url"]).data, PDF)
+        self.upstream.username = "another-account"
+        changed = PDF.replace(b"fixture", b"updated")
+        self.upstream.next_response = pdf_response(changed)
+        self.assertEqual(self.captain.get(document["url"]).data, changed)
+        self.assertEqual(len(self.upstream.fetch_calls), 3)
+
+    def test_concurrent_team_opens_download_pdf_only_once(self):
+        member = self.member()
+        document = self.detail()["statement_pdfs"][0]
+        entered, release, second_started = threading.Event(), threading.Event(), threading.Event()
+
+        class SlowRaw(PDFRaw):
+            def read(self, size=-1):
+                entered.set()
+                if not release.wait(5):
+                    raise AssertionError("Concurrent PDF test timed out")
+                return super().read(size)
+
+        upstream = pdf_response()
+        upstream.raw = SlowRaw(PDF)
+        self.upstream.next_response = upstream
+
+        def open_member():
+            second_started.set()
+            return member.get(document["url"]).data
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first = pool.submit(lambda: self.captain.get(document["url"]).data)
+            try:
+                self.assertTrue(entered.wait(5))
+                second = pool.submit(open_member)
+                self.assertTrue(second_started.wait(5))
+            finally:
+                release.set()
+            self.assertEqual(first.result(timeout=5), PDF)
+            self.assertEqual(second.result(timeout=5), PDF)
+        self.assertEqual(len(self.upstream.fetch_calls), 1)
 
     def test_unadvertised_token_and_other_problem_ids_do_not_reach_upstream(self):
         member = self.member()

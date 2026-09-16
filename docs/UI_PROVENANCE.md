@@ -26,4 +26,6 @@ DOMjudge 官方 README 的 [Copyright & Licensing](https://github.com/DOMjudge/d
 
 Vue 3 使用 MIT 许可证，随浏览器产物分发的版权和许可原文保存在 `frontend/public/THIRD_PARTY_LICENSES.txt`，构建后可通过 `/static/THIRD_PARTY_LICENSES.txt` 读取。Vite 和 Vue 构建插件仅用于开发构建，依赖版本由 `package-lock.json` 锁定，安装包保留各自许可。
 
+虚拟打印的源代码高亮使用 [Pygments](https://pygments.org/docs/quickstart/)（BSD-2-Clause），由 Python 后端生成转义后的 HTML 与样式，不从外部 CDN 加载脚本。许可证原文保存在 `docs/PYGMENTS_LICENSE.txt`；页面排版独立实现，上传的代码仅作文本展示。
+
 从 QOJ 代理展示的题面、PDF、附件、登录页面及其所需资源来自 QOJ 或相应权利人，区别于本项目编写的参赛界面；代理展示不改变这些内容各自的权利与使用条件。

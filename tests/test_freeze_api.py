@@ -67,10 +67,13 @@ class FreezeAPITests(unittest.TestCase):
         alpha_public, beta_public = self.row(state, "Alpha"), self.row(state, "Beta")
         self.assertEqual(alpha_public["solved"], 1)
         self.assertEqual(alpha_public["problem_stats"]["2"],
-                         {"attempts": 1, "wrong": 0, "pending": 1, "solved": False, "time": None})
+                         {"attempts": 1, "wrong": 0, "pending": 1, "solved": False,
+                          "time": None, "submissions": 1})
         self.assertEqual(beta_public["solved"], 0)
         self.assertEqual(beta_public["problem_stats"]["1"]["pending"], 1)
         self.assertEqual(beta_public["problem_stats"]["2"]["pending"], 1)
+        # Counting visible submissions must not distinguish a frozen AC from CE.
+        self.assertEqual(beta_public["problem_stats"]["2"], alpha_public["problem_stats"]["2"])
         for row in state["scoreboard"]:
             self.assertTrue(row["frozen"])
             self.assertFalse({"submissions", "qoj_id", "qoj_url", "verdict", "source"} & set(row))

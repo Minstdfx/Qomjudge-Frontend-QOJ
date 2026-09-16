@@ -1,10 +1,15 @@
 """Private, persistent virtual print files, scoped to an owner and VP run."""
 from __future__ import annotations
 
+import html
 import secrets
 import sqlite3
 import time
 from pathlib import Path
+
+from pygments import highlight
+from pygments.formatters import HtmlFormatter
+from pygments.lexers import get_lexer_by_name
 
 from storage import Store
 
@@ -13,6 +18,68 @@ MAX_RUN_BYTES = 20 * 1024 * 1024
 MAX_RUN_FILES = 100
 TEXT_EXTENSIONS = {'.txt', '.cpp', '.cc', '.cxx', '.c', '.h', '.hpp', '.py', '.java',
                    '.kt', '.rs', '.go', '.pas', '.js', '.cs', '.rb', '.md'}
+CODE_LANGUAGES = {
+    '.cpp': ('cpp', 'C++'), '.cc': ('cpp', 'C++'), '.cxx': ('cpp', 'C++'),
+    '.h': ('cpp', 'C++'), '.hpp': ('cpp', 'C++'), '.c': ('c', 'C'),
+    '.py': ('python', 'Python'), '.java': ('java', 'Java'), '.kt': ('kotlin', 'Kotlin'),
+    '.rs': ('rust', 'Rust'), '.go': ('go', 'Go'), '.pas': ('pascal', 'Pascal'),
+    '.js': ('javascript', 'JavaScript'), '.cs': ('csharp', 'C#'), '.rb': ('ruby', 'Ruby'),
+}
+
+
+def render_print(name: str, source: str) -> str:
+    """Render escaped, self-contained source HTML; never execute uploaded markup."""
+    title = html.escape(name)
+    language = CODE_LANGUAGES.get(Path(name).suffix.lower())
+    source = source.replace('\r\n', '\n').replace('\r', '\n')
+    lines = source.count('\n') + (not source.endswith('\n'))
+    syntax_css = ''
+    if language:
+        alias, label = language
+        # Filename-selected built-in lexers only: no guessing, plugins, user options,
+        # JavaScript, or external assets are needed to read the rendered document.
+        lexer = get_lexer_by_name(alias, stripnl=False, ensurenl=False, tabsize=0)
+        formatter = HtmlFormatter(nowrap=True, style='friendly')
+        rendered = highlight(source, lexer, formatter)
+        # The HTML formatter terminates its last line even when the file did not.
+        # Keep the original newline/indentation; generated line numbers are not
+        # selectable and do not become part of the copied source.
+        if not source.endswith('\n') and rendered.endswith('\n'):
+            rendered = rendered[:-1]
+        rows = rendered.split('\n')
+        if rendered.endswith('\n'):
+            rows.pop()
+        numbered = '\n'.join(f'<span class="linenos" aria-hidden="true">{index}</span>{line}'
+                             for index, line in enumerate(rows, 1))
+        if rendered.endswith('\n'):
+            numbered += '\n'
+        body = f'<div class="source"><pre><code>{numbered}</code></pre></div>'
+        syntax_css = formatter.get_style_defs('.source')
+        description = f'{label} · 语法高亮 · {lines} 行'
+    else:
+        body = f'<div class="source"><pre><code>{html.escape(source)}</code></pre></div>'
+        description = f'纯文本 · {lines} 行'
+    return (
+        '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1">'
+        f'<title>{title} · 虚拟打印</title><style>{syntax_css}'
+        'body{margin:0;background:#edf2f6;color:#243647;font:15px/1.6 system-ui,sans-serif}'
+        'main{max-width:1180px;margin:28px auto;background:#fff;border:1px solid #dce3e9;border-radius:8px;overflow:hidden}'
+        'header{padding:20px 24px;border-bottom:1px solid #dce3e9;background:#f8fafc}'
+        'h1{margin:0;font-size:20px;font-weight:650;overflow-wrap:anywhere}'
+        '.metadata{margin:5px 0 0;color:#607383;font-size:13px}'
+        '.source{padding:20px 24px;background:#fff}'
+        '.source pre,.source code{margin:0;font:14px/1.65 Consolas,"Microsoft YaHei","微软雅黑",ui-monospace,monospace;tab-size:4}'
+        '.source pre{white-space:pre-wrap;overflow-wrap:anywhere}'
+        '.source .linenos{display:inline-block;min-width:3ch;margin-right:16px;padding-right:12px;'
+        'border-right:1px solid #e2e8ee;color:#8493a0;background:transparent;user-select:none}'
+        '@media(max-width:640px){main{margin:0;border:0;border-radius:0}header,.source{padding:16px 12px}}'
+        '@page{margin:14mm}@media print{body{background:#fff}main{margin:0;max-width:none;border:0;border-radius:0;overflow:visible}'
+        'header{background:#fff;padding:0 0 10px}h1{font-size:15px}.source{padding:12px 0 0}'
+        '.source pre,.source code{font-size:10pt}.source .linenos{color:#666}}'
+        f'</style></head><body><main><header><h1>{title}</h1>'
+        f'<p class="metadata">{description}</p></header>{body}</main></body></html>'
+    )
 
 
 class PrintError(Exception):

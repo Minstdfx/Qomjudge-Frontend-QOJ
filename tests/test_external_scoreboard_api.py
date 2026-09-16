@@ -112,6 +112,7 @@ class ExternalScoreboardAPITests(unittest.TestCase):
         self.assertTrue(participation["scoreboard_available"])
         self.assertEqual(participation["scoreboard_source"], "qoj-external")
         self.assertEqual(participation["scoreboard_url"], EXTERNAL_URL)
+        self.assertEqual(participation["scoreboard_problem_totals"]["10"], {"solved": 1, "submissions": 2})
         self.assertEqual(len(state["scoreboard"]), 1)
         row = state["scoreboard"][0]
         self.assertTrue(row["is_self"])

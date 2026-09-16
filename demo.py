@@ -19,7 +19,7 @@ class DemoClient:
         self.lock = RLock()
 
     def contest(self, contest_id):
-        return {"id": contest_id, "title": "DOMjudge Practice Contest · 离线演示", "duration_seconds": 18000,
+        return {"id": contest_id, "title": "QOJ Practice Contest · 离线演示", "duration_seconds": 18000,
                 "attachments": [
                     {"id": "demo-samples", "name": "samples.zip", "type": "attachment", "size": "",
                      "url": "", "external": False},

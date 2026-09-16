@@ -22,6 +22,7 @@ class RecoveryClient(NativeClient):
                          "source_hash": "private-recovery-fingerprint", "prepared_at": start_time + 100}
         self.recovered = {"qoj_id": 909, "qoj_url": "https://qoj.ac/submission/909"}
         self.recovery_error = None
+        self.preflight_error = None
         self.submit_error = QOJError("Submission POST outcome uncertain", 502)
         self.verdict_error = None
         self.verdict_result = {"verdict": "AC", "message": "100 / 100"}
@@ -32,6 +33,8 @@ class RecoveryClient(NativeClient):
         self.calls.append(("submit", contest_id, pid, language, source, filename))
         if self.payload_observer:
             self.payload_observer()
+        if self.preflight_error:
+            raise self.preflight_error
         on_prepared(deepcopy(self.prepared))
         raise self.submit_error
 
@@ -142,6 +145,55 @@ class SubmissionRecoveryAPITests(unittest.TestCase):
         self.assertEqual(self.calls("verdict"), [("verdict", 909)])
         self.assertEqual(len(self.calls("submit")), 1)
         self.assertEqual(self.source(sub_id).get_json()["qoj_id"], 909)
+
+    def test_preflight_failure_is_final_and_keeps_source_without_polling_or_resending(self):
+        self.upstream.preflight_error = QOJError("QOJ 提交表单地址与所选题目不一致。", 422)
+        response = self.post("/api/submit", {"problem_id": 1, "language": "C++17",
+                                           "source": SOURCE, "filename": "main.cpp"})
+        self.assertEqual(response.status_code, 422)
+        sub = self.store.submissions(self.run_id)[0]
+        self.assertEqual(sub["verdict"], "FAILED")
+        self.assertIsNone(sub["qoj_id"])
+        self.assertIn("代码尚未发送到 QOJ", sub["message"])
+        self.assertIsNone(self.store.submission_payload(sub["id"])["receipt"])
+        self.assertEqual(self.source(sub["id"]).get_json()["source"], SOURCE)
+        for _ in range(3):
+            self.now += 8
+            self.assertEqual(self.state()["submissions"][0]["verdict"], "FAILED")
+        self.assertEqual(self.calls("reconcile"), [])
+        self.assertEqual(self.calls("verdict"), [])
+        self.assertEqual(len(self.calls("submit")), 1)
+
+        cookie = self.client.get_cookie("qoj_vp_session")
+        resumed_upstream = RecoveryClient(self.upstream.start_time)
+        resumed = self.make_app(resumed_upstream).test_client()
+        resumed.set_cookie("qoj_vp_session", cookie.value)
+        self.assertEqual(self.state(resumed)["submissions"][0]["verdict"], "FAILED")
+        self.assertFalse(any(call[0] in {"submit", "reconcile", "verdict"} for call in resumed_upstream.calls))
+        self.assertEqual(self.source(sub["id"], resumed).get_json()["source"], SOURCE)
+
+    def test_preflight_network_and_rate_limit_failures_do_not_become_pending_submissions(self):
+        for status in (502, 429):
+            with self.subTest(status=status):
+                self.upstream.preflight_error = QOJError("Fetching submission form failed", status)
+                response = self.post("/api/submit", {"problem_id": 1, "language": "C++17",
+                                                   "source": SOURCE, "filename": "main.cpp"})
+                self.assertEqual(response.status_code, status)
+                sub = self.store.submissions(self.run_id)[0]
+                self.assertEqual(sub["verdict"], "FAILED")
+                self.assertEqual(sub["next_poll_at"], 0)
+                self.assertIsNone(self.store.submission_payload(sub["id"])["receipt"])
+                self.now += 60
+                self.state()
+        self.assertEqual(self.calls("reconcile"), [])
+        self.assertEqual(self.calls("verdict"), [])
+
+    def test_adapter_without_preparation_tracking_keeps_errors_uncertain(self):
+        # Compatibility adapters may already have sent a POST before raising;
+        # only adapters with the preparation callback can prove non-delivery.
+        self.upstream.reconcile_submission = None
+        with patch.object(self.upstream, "submit", side_effect=QOJError("Outcome unknown", 502)):
+            self.uncertain_submission()
 
     def test_missing_match_and_network_failures_retain_receipt_for_later_read_only_retry(self):
         sub_id = self.uncertain_submission()

@@ -158,11 +158,11 @@ class TerminalClientTests(unittest.TestCase):
         self.assertEqual(posts[0]["path"], "/api/submit")
         return json.loads(posts[0]["body"])
 
-    def test_submit_infers_problem_and_cpp17_preserves_utf8_and_exits_without_polling(self):
+    def test_submit_infers_problem_and_latest_cpp_preserves_utf8_and_exits_without_polling(self):
         result = self.command()
         self.assert_success(result)
         payload = self.submission_payload()
-        self.assertEqual(payload, {"problem_id": 101, "language": "cpp17",
+        self.assertEqual(payload, {"problem_id": 101, "language": "cpp20",
                                   "source": self.source.read_bytes().decode("utf-8"), "filename": "A.cpp"})
         self.assertEqual(self.state_reads_after_post, 0)
         self.assertIn("47", result.stdout)
@@ -177,6 +177,17 @@ class TerminalClientTests(unittest.TestCase):
         payload = self.submission_payload()
         self.assertEqual(payload["problem_id"], 202)
         self.assertEqual(payload["language"], "cpp20")
+
+    def test_submit_cpp_defaults_to_26_despite_98_appearing_first(self):
+        self.problem["languages"] = [{"value": "C++98", "label": "C++98 (GCC 14)"},
+                                     {"value": "C++26", "label": "C++26 (GCC 14)"},
+                                     {"value": "C++23", "label": "C++23 (GCC 14)"}]
+        self.assert_success(self.command())
+        self.assertEqual(self.submission_payload()["language"], "C++26")
+
+    def test_explicit_older_cpp_is_preserved(self):
+        self.assert_success(self.command("submit", "-l", "cpp17"))
+        self.assertEqual(self.submission_payload()["language"], "cpp17")
 
     def test_non_ascii_source_filename_gets_safe_upload_name_without_renaming_local_file(self):
         source = self.work / "我的解法.cpp"

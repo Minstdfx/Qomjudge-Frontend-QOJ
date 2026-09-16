@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, onUnmounted, provide, watchEffect } from 'vue';
+import { computed, onMounted, onUnmounted, provide, ref, watchEffect } from 'vue';
 import { contestKey, createContestStore } from './composables/useContest.js';
 import { duration, timeOfDay } from './lib/format.js';
 import { verdictInfo } from './lib/verdicts.js';
@@ -24,6 +24,20 @@ const tabs = [['participation', 'Contest', '参赛'], ['overview', 'Overview', '
 const title = computed(() => !c.state ? c.connectionError ? '暂时无法连接比赛' : '正在连接比赛…' : c.canRead ? c.state.contest?.title || `Contest #${c.state.contest?.id || ''}` : `Contest #${c.state.contest?.id || ''}`);
 const submissions = computed(() => c.canRead && c.can('manage') ? [...(c.state?.submissions || [])].sort((a, b) => b.submitted_at - a.submitted_at || b.id - a.id) : []);
 const pending = computed(() => submissions.value.filter(s => verdictInfo(s.verdict, s).cls === 'pending').length);
+const refreshingSubmissions = ref(false);
+
+async function refreshSubmissions() {
+  if (!c.allowedTab('submissions') || c.teamChanging || refreshingSubmissions.value) return;
+  const context = c.context;
+  refreshingSubmissions.value = true;
+  try {
+    const result = await c.refreshState(true);
+    if (context !== c.context) return;
+    if (result) c.notify('提交记录已刷新。', 'success');
+    else c.notify(c.scoreboardError || c.connectionError || '刷新提交记录失败，请稍后重试。', 'error');
+  } finally { refreshingSubmissions.value = false; }
+}
+
 const remaining = computed(() => {
   const start = Number(c.part.started_at) || 0, end = Number(c.part.ends_at) || 0;
   const now = c.tick + c.clockOffset;
@@ -69,7 +83,18 @@ watchEffect(() => { document.title = `${title.value} · QOJ Contest`; });
     <OverviewView />
     <ProblemWorkspace />
     <AttachmentsView />
-    <section id="view-submissions" class="view" aria-label="提交记录" :hidden="c.tab !== 'submissions'"><section class="card table-card"><div class="section-heading"><h2>Submissions <span class="heading-note">本次比赛的提交</span></h2><span class="muted small">评测结果自动更新</span></div><div id="submissions-table" class="table-scroll"><SubmissionTable :submissions="submissions" /></div></section></section>
+    <section id="view-submissions" class="view" aria-label="提交记录" :hidden="c.tab !== 'submissions'">
+      <section class="card table-card">
+        <div class="section-heading">
+          <h2>Submissions <span class="heading-note">本次比赛的提交</span></h2>
+          <button id="submissions-refresh" type="button" class="button button-outline button-small"
+                  title="评测结果自动更新，也可手动刷新" :aria-busy="refreshingSubmissions"
+                  :disabled="refreshingSubmissions || !c.allowedTab('submissions') || c.teamChanging"
+                  @click="refreshSubmissions">{{ refreshingSubmissions ? '正在刷新…' : '刷新提交记录' }}</button>
+        </div>
+        <div id="submissions-table" class="table-scroll"><SubmissionTable :submissions="submissions" /></div>
+      </section>
+    </section>
     <ScoreboardView />
     <PrintingView />
     <TeamView />

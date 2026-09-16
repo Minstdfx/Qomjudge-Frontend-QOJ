@@ -45,6 +45,7 @@ async function refresh() {
     </section>
     <div id="scoreboard-footer" class="scoreboard-footer" :hidden="!c.canRead || !!result.error">
       <div class="table-legend">
+        <span class="muted small">题头：通过队伍数 / 提交次数</span>
         <span class="legend-item"><i class="legend-dot accepted-dot"></i>Accepted</span>
         <span id="first-blood-legend" class="legend-item" title="QOJ 标记的首次通过 / 一血" :hidden="!firstBloodLegend"><i class="legend-dot first-blood-dot"></i>First to solve</span>
         <span class="legend-item"><i class="legend-dot wrong-dot"></i>Incorrect</span>
