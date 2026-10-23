@@ -88,6 +88,8 @@ def main():
     vite_entry = ROOT / "node_modules" / "vite" / "bin" / "vite.js"
     if not node or not vite_entry.is_file():
         parser.error("Node and local Vite are required; run npm install first")
+    subprocess.run([node, str(ROOT / "scripts" / "check-node.mjs")], check=True, cwd=ROOT,
+                   creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
 
     with TemporaryDirectory(prefix="qoj-vite-demo-") as temporary:
         app = create_app(contest_id=1, demo=True, data_dir=Path(temporary) / "data")

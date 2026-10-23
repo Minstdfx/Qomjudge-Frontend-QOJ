@@ -13,10 +13,10 @@ import tarfile
 
 ROOT = Path(__file__).resolve().parents[1]
 ROOT_FILES = (
-    'app.py', 'cli_auth.py', 'demo.py', 'downloads.py', 'participation.py', 'printing.py',
+    'app.py', 'ccpc.py', 'cli_auth.py', 'demo.py', 'downloads.py', 'joint_entry.py', 'joint_vp.py', 'participation.py', 'printing.py',
     'qoj.py', 'results.py', 'statements.py', 'storage.py', 'submission_data.py',
     'teams.py', 'requirements.txt', 'package.json', 'package-lock.json',
-    'README.md', 'Dockerfile', '.dockerignore', '.gitignore',
+    'README.md', 'Dockerfile', '.dockerignore', '.gitignore', '.npmrc', '.nvmrc',
     'cli/submit', 'cli/printfile',
 )
 SOURCE_TREES = {
@@ -95,18 +95,17 @@ def main():
 
 ## 本版更新
 
-- Problemset 的 PDF 题面首次完整加载后保存在服务端内存缓存中，同队设备重复打开可复用，并支持 Range 分段读取。缓存按账号和题目隔离，每次读取仍检查参赛权限；点击“重新加载”可清除对应缓存。
-- 虚拟打印的源代码使用本地 Pygments 进行语法高亮，显示行号并保留缩进与空行，优先使用 Consolas 和微软雅黑。普通文本与 PDF 保持原有预览方式，下载保留原始文件内容。
-- 网页和终端识别到 C++ 源码时，默认选择 QOJ 实际支持的最新标准（优先 C++26）；网页中的手动选择和旧草稿已保存的语言继续保留。
-- 榜单每题表头显示“通过队伍数 / 总提交次数”。提交次数统计提交记录，包含同队重复提交；优先采用 QOJ 提供的汇总，缺失时按可见榜单统计，无法确定的数值显示“—”，不推算封榜隐藏结果。
-- 修复带 `/statement/en`、`/statement/default` 等语言后缀的 QOJ 提交表单地址被误拒绝的问题，继续核对比赛号、题号与上游地址。
-- 确定在发送前失败的提交显示“提交失败”，不再误报“编号待确认”，并保留已保存的源码。旧记录仅在能确认属于上述地址校验错误且未生成发送凭据时更正；网络结果不确定的记录继续核对编号，任何情况都不会自动重交代码。
-- Submissions 新增“刷新提交记录”按钮，提供加载状态及成功、失败提示，刷新期间禁止重复点击；已有评测自动更新继续保留。
+- 新增可选的 CCPC 动态榜单：通过 `--scoreboard-style ccpc --ccpc-unlock 50` 开启，按不同 AC 队伍数逐步揭晓题号；支持 `--ccpc-unlock-overrides A=10,C=20` 为指定题目设置阈值。匿名成绩块在后端移除题目对应关系，已通过题按公开的通过时间排列，保留 QOJ 的排名、过题数、罚时、一血和封榜提交。默认普通榜单不变。
+- CCPC 揭晓记录持久化，刷新或重启不会重新隐藏；识别到 QOJ 封榜阶段或参赛结束时公开全部题号，同时保留上游尚未解封的评测结果。无法识别封榜时点时，可用 `--ccpc-reveal-after 240` 指定从本队实际开赛起 240 分钟公开题号。阈值统计包含当前 QOJ 榜单中的历史队伍，不额外叠加 20% 条件；本队概览和提交记录仍显示真实题号。
+- 新增多队联合 VP：各队长使用自己的 QOJ 账号，加入同一联合组织、读取报名选项并明确授权后，由组织者并发发起开赛。最多 20 队，沿用各队实际 QOJ 计时及上游榜单，显示已确认的开赛时间差。单队失败不影响其他队伍；不确定的开赛请求只核查状态，不自动重发。服务重启保留记录，但需要重新准备授权。
+- 新增启动参数 `--show-unofficial` / `--no-show-unofficial`。明确指定时优先读取 QOJ 原生榜单，使开关生效；未指定时保留现有榜单来源选择。
+- 更新前端构建安全要求：推荐 Node.js 24.22.1 LTS，支持范围为 `^22.23.4 || ^24.22.1 || ^26.12.1`；安装依赖、开发及构建入口会检查版本。Docker 构建阶段同步更新，Vite 升级至 8.3.5。直接运行本发布包的 Python 服务无需 Node.js。
+- 保留 PDF 题面缓存、虚拟打印代码高亮、最新 C++ 标准自动选择、手动刷新提交记录及此前的提交修复。
 
 ## 从旧版升级
 
 1. 停止旧服务并备份数据目录，保留原有 `.data/`（或 `--data-dir` 指定的目录）。不要用新空目录替换原数据；队伍、提交源码和虚拟打印文件会继续使用这些数据。
-2. 更新程序文件后，在服务使用的 Python 环境中运行 `python -m pip install -r requirements.txt`，安装本版新增的 Pygments 等依赖。
+2. 更新程序文件后，在服务使用的 Python 环境中运行 `python -m pip install -r requirements.txt`，确保依赖完整。
 3. 使用原比赛参数及数据目录重新启动 Python 后端，在队长网页重新连接 QOJ，再刷新浏览器加载新版界面。发布包已经包含编译后的前端，无需运行 npm。
 
 已有 QOJ VP 可通过刷新状态恢复。对于两步 VP，点击 Start 后仍需在 Contest 页确认报名，确认开赛前比赛内容保持关闭。保留 v1.2.2 的参赛规则提示，以及两步报名、Cookie 更新、队伍解散、终端提交等已有功能。
@@ -131,6 +130,14 @@ python app.py --contest 1802 --mode vp --host 0.0.0.0 --port 8080
 将 1802 替换为目标比赛 ID。虚拟环境、局域网访问、账号连接、队伍权限和前端开发方法见 README.md。
 前端依赖许可见 static/THIRD_PARTY_LICENSES.txt，Pygments 许可见 docs/PYGMENTS_LICENSE.txt，界面来源见 docs/UI_PROVENANCE.md。
 
+CCPC 动态榜单：
+
+```sh
+python app.py --contest 1802 --scoreboard-style ccpc --ccpc-unlock 50
+```
+
+多队联合 VP 在 Contest 页创建与加入。需要展示非正式参赛者时可加 `--show-unofficial`。这两项功能都继续遵循每个 QOJ 账号可见的榜单，不拼接各队隐藏成绩。CCPC 视图隐藏本服务公共榜单中的题目对应关系，直接访问 QOJ 原榜仍可能看到题号。
+
 ## 终端提交与虚拟打印
 
 包含 `cli/submit` 和 `cli/printfile`（Windows 使用同名 `.cmd`）。客户端仅需 Python 3.10+，可把整个 cli 目录复制到队长电脑。
@@ -144,6 +151,8 @@ python cli/printfile.py --config qoj-cli.json notes.txt
 PATH 配置、指定题号/语言、等待结果与权限说明见 docs/CLI.md。升级后请重启 Python 后端，原有 QOJ 连接需在队长网页重新建立。
 
 ## 重新构建发布包
+
+使用 Node.js 24.22.1 或更新的 24.x LTS 补丁版本；其他支持版本及安全下限见 README.md。
 
 ```sh
 npm ci

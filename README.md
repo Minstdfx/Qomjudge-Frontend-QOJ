@@ -54,12 +54,14 @@ python cli/printfile.py --config qoj-cli.json notes.txt
 
 页面源码在 `frontend/src/`：`App.vue` 组织页面，`components/` 包含参赛、题面、提交、榜单、队伍和打印组件，`composables/useContest.js` 管理响应式状态、权限、路由与 API，`styles/app.css` 保留独立实现的界面样式。不要直接修改 `static/assets/` 中的编译文件。
 
-安装 Node.js 22.12+ 或 24 LTS 后，在项目根目录运行：
+推荐安装 Node.js **24.22.1 或更新的 24.x LTS 补丁版本**；也支持 22.x ≥ 22.23.4、26.x ≥ 26.12.1。在项目根目录运行：
 
 ```powershell
 npm.cmd ci
 npm.cmd run build
 ```
+
+这些最低版本包含 [2026-10-21 Node.js 安全修复](https://nodejs.org/en/blog/vulnerability/october-2026-security-releases)。`.nvmrc` 指定推荐版本；安装依赖、启动开发服务器及构建时都会检查 Node 版本，旧版本需要先升级。Vite 已更新至 8.3.5。Node 仅用于开发和构建，直接运行 Python 服务或发布包无需 Node。
 
 `build` 先编译到 `frontend-dist/`，成功后将产物发布到 `static/`。运行中的 Python 服务无需重启，刷新浏览器即可加载新界面；构建失败不会替换现有页面。Linux/macOS 使用 `npm` 替代 `npm.cmd`。
 
@@ -104,9 +106,50 @@ Training Mode 使用明确的 PC2 入口，例如 `https://qoj.ac/results/QOJ396
 
 External Standings 的一血完全使用上游标记，不按显示的分钟数重新推算。若 QOJ 没有提供 External 入口，仍兼容原生 ICPC 榜单及其一血规则。PC2 / Training Mode 不推算或显示一血。
 
+启动时可指定 QOJ 原生榜单的 **Show unofficial**（显示非正式参赛者）：
+
+```sh
+# 显示非正式参赛者
+python app.py --contest 1802 --show-unofficial
+
+# 隐藏非正式参赛者
+python app.py --contest 1802 --no-show-unofficial
+```
+
+不指定这两个参数时，保持原有榜单来源和导入的 QOJ 显示偏好。指定任一参数时，优先使用当前比赛提供的 QOJ 原生榜单（优先级高于 `--scoreboard pc2`），由 QOJ 筛选参赛者并返回对应名次和成绩；该选择适用于此服务的所有队伍，重新连接账号或导入 Cookie 后仍然生效。更改参数需要重启后端。
+
+External Standings 和 PC2 的静态榜单不支持此开关。若 QOJ 当前只返回或嵌入这些榜单，会保留上游原榜并在榜单页提示无法应用筛选。该选项不修改账号的 Training Mode；离线演示也不区分正式与非正式参赛者。
+
 各题表头显示 **通过队伍数 / 提交次数**。External Standings 优先使用上游表头汇总，PC2 使用其 `Submitted/1st Yes/Total Yes` 汇总行；没有汇总时只累加当前可见榜单，未知计数显示 `—`，不推算封榜结果。提交次数会累计同队的多次尝试，不是提交过该题的队伍数量。统计口径参考 [DOMjudge 官方实现](https://github.com/DOMjudge/domjudge/blob/main/webapp/src/Utils/Scoreboard/Scoreboard.php#L247-L254)，数值以 QOJ 当前公开的记录为准。
 
 读取使用队长在反代中连接的 QOJ 会话。原生参赛状态确认开始后才请求榜单，队员通过本地 API 共享结果；读取失败时显示错误并清除旧榜，不会改读其他公开榜单。PC2 Name 若不包含可核实的 QOJ 用户名，仍可显示完整榜单，但个人成绩摘要可能无法自动匹配。
+
+## CCPC 动态榜单
+
+使用 ICPC 计分的比赛可选择按通过队伍数逐步揭晓题号。默认仍为普通榜单；开启 CCPC 视图时必须指定默认阈值：
+
+```sh
+python app.py --contest 1802 --scoreboard-style ccpc --ccpc-unlock 50
+python app.py --contest 1802 --scoreboard-style ccpc --ccpc-unlock 50 --ccpc-unlock-overrides A=10,C=20
+```
+
+`--ccpc-unlock` 是每题默认的**不同通过队伍数**，单题参数覆盖默认值，题号区分大小写。达到阈值即揭晓；`0` 表示立即公开，允许范围为 0–20000。重复题号、负数或错误格式会阻止启动；未知题号在 QOJ 开放题目列表后显示配置错误，不会退回未遮蔽的榜单。普通视图不能同时指定 CCPC 参数。
+
+榜单保留 QOJ 的排名、过题数和罚时，右侧改为每队独立的成绩块：已通过题按公开的通过时间排列，其他有提交的题另组排列；匿名块不对应固定题目列，未揭晓时只显示 `?`、状态、尝试次数及上游公开的时间。绿色表示通过，深绿色表示上游明确提供的一血，蓝色表示待评测或封榜提交。PC2 不推测一血。本队概览、题目页和提交记录仍显示真实题号。
+
+阈值按当前 QOJ 榜单中可见的不同队伍计数，重复 AC 只计一次，`?x` 不计作通过。**历史参赛队伍也会计入，部分题可能在 VP 开始时已经达到阈值**；联合 VP 不单独计分。`Show unofficial` 继续决定上游榜单范围。已揭晓题显示通过队伍数和提交次数：External/PC2 同页汇总的通过数与可见队伍一致、提交数不少于可见尝试数时，采用上游汇总，以计入 AC 后的重复提交；否则只统计可见尝试，未知次数显示 `—`。未揭晓题不显示与题号绑定的统计，也不使用上游汇总判断揭晓阈值。
+
+题号揭晓与评测结果封榜独立：确认进入 QOJ 封榜阶段后公开全部题号，但排名、罚时和 `?x` 继续服从上游。目前识别比赛系统侧栏的英文规则 `Scoreboard will be frozen after H:MM:SS`，并按本队开赛时间换算。参赛结束也会公开全部题号，不会提前解开 QOJ 的评测结果。如果上游未提供可确认的封榜时点，可指定：
+
+```sh
+python app.py --contest 1802 --scoreboard-style ccpc --ccpc-unlock 50 --ccpc-reveal-after 240
+```
+
+`--ccpc-reveal-after` 是从本队 **QOJ 实际开赛时间**起多少分钟公开全部题号（0–10080）；不更改 QOJ 赛长、排名或封榜。未指定且无法识别上游封榜时点时，页面会提示，继续按阈值或参赛结束揭晓，不会把普通待评测误认作全场封榜。
+
+揭晓记录保存到现有 SQLite，按账号、本次参赛、榜单来源、显示偏好和阈值配置隔离，刷新或重启不会重新隐藏已揭晓题。浏览器收到的是后端处理后的公共成绩块，未揭晓块不含题目 ID 或提交链接；队员与队长共享同一视图。这是本服务内的训练展示方式，直接打开 QOJ 原榜仍可能看到题号对应关系。公开方案参考 [2026 CCPC 网络赛 N：New CCPC Rule](https://codeforces.com/gym/106725/problem/N)，本项目使用启动参数的阈值，不额外叠加 20% 条件。
+
+离线预览：`python app.py --demo --scoreboard-style ccpc --ccpc-unlock 2`。无需账号，不请求 QOJ。
 
 ## 同一局域网的另一台电脑访问
 
@@ -187,6 +230,24 @@ PDF 首次成功下载后保存在服务进程的内存缓存中，同队机器�
 
 服务端更新后需要重启服务再刷新浏览器，以加载新的附件 API。真实附件仍取决于账号权限及 QOJ 当前页面；无账号的本地测试使用模拟响应验证下载完整性。
 
+## 多队联合 VP
+
+多支队伍可以连接同一个服务，在 **Contest → Joint VP / 多队联合开赛** 中准备，并由组织者一起启动 QOJ 原生 VP。每队仍使用自己的 QOJ 账号和上游计时，榜单、评测、封榜与一血继续读取 QOJ；没有额外的本地计时或房间计分。
+
+```powershell
+python app.py --contest 1802 --host 0.0.0.0 --port 8080 --show-unofficial
+```
+
+1. 每队队长先在 **Team** 创建自己的队伍，并连接独立的 QOJ 账号。队员继续使用本队的加入码。
+2. 组织者在 **Contest** 创建联合 VP，把邀请链接或联合 VP 邀请码发给其他队长。打开链接只填写邀请码，不会自动加入或开始比赛。此邀请码用于整支队伍加入，与队员加入码不同。
+3. 各队加入后点击“读取 QOJ 报名选项”。此步骤仅查询，不会开始 VP；能够直接读取的第二步确认页面会提前展示。队长确认 QOJ 选项，并勾选“授权组织者启动本次 VP”，再点击“确认准备”。
+4. 至少两队加入且全部准备后，组织者点击“一起 Start”。服务器在后台并发处理各队开赛，不要求每队精确同秒开始。面板显示各队实际开始、结束时间及已确认的开赛时间差。
+5. 单队启动失败不影响其他队伍。若显示“状态待核查”，先点击联合 VP 的“刷新状态”进行只读核查；确认未开始后，由该队队长在原有参赛入口确认选项并单独补开。不会自动重发开赛请求，也不会自动接受新出现的报名确认选项。
+
+一次联合 VP 最多 20 队。准备后须先取消准备，才能切换账号、参赛模式、单独开始或解散本队；启动过程中不能取消联合组织或退出。取消联合组织、退出联合 VP 不会取消 QOJ 上已经开始的比赛，也不删除提交或打印记录。服务重启保留参与队伍和启动记录，但清除开赛授权；待启动队伍需要重新连接并准备，执行中断的请求仅核查状态，不会自动恢复发送。
+
+联合开赛仅用于真实 VP，不用于正式比赛或离线演示。队员只能查看联合状态，不能准备或发起开赛。`--show-unofficial` 仍按现有规则作用于 QOJ 榜单；若上游将正在 VP 的队伍归入 unofficial，可开启它以显示这些队伍。上游必须提供并允许读取对应榜单，联合功能不会拼接各队隐藏成绩。
+
 ## 三台机器组队与虚拟打印
 
 1. 三台机器访问**同一个服务地址**。队长在自己的浏览器连接 QOJ，打开 **Team / 队伍**，填写队伍名和设备名并创建队伍。创建前已经开始的 VP、提交记录和计时会保留。
@@ -238,7 +299,7 @@ PDF 首次成功下载后保存在服务进程的内存缓存中，同队机器�
 Docker：
 
 ```bash
-docker build -t qoj-vp .
+docker build --pull -t qoj-vp .
 docker run --rm -p 8080:8080 -v qoj-vp-data:/app/.data qoj-vp --contest 1802 --host 0.0.0.0
 ```
 
@@ -260,6 +321,8 @@ docker run --rm -p 8080:8080 -v qoj-vp-data:/app/.data qoj-vp --contest 1802 --h
 
 源码与提交结果浏览器回归：`python scripts/submission_browser_smoke.py`。同样使用内存路由，验证源码查看、复制、下载、角色限制、终态显示和手机布局，不向 QOJ 提交测试代码。
 
+CCPC 榜单浏览器回归：`python scripts/ccpc_browser_smoke.py`。使用模拟上游和内存路由，验证匿名题号、达到阈值后揭晓、封榜、个人概览、PC2、一血和移动端布局，并将预览图保存到 `artifacts/ccpc/`。
+
 组队浏览器验证：`python scripts/teams_browser_smoke.py http://127.0.0.1:8080`。脚本建立四个独立浏览器会话，验证队长及两名队员、额外设备拒绝、上传与粘贴打印、队员预览下载、设备撤销及移动端。也只允许在 `--demo` 实例运行。
 
 核心文件：
@@ -267,11 +330,14 @@ docker run --rm -p 8080:8080 -v qoj-vp-data:/app/.data qoj-vp --contest 1802 --h
 | 文件 | 作用 |
 | --- | --- |
 | `app.py` | 命令行启动、Web API、会话及代理路由 |
+| `ccpc.py` | CCPC 题号揭晓、匿名成绩块和揭晓记录持久化 |
 | `results.py` | QOJ PC2 results HTML 榜单解析 |
 | `submission_data.py` | 原始提交记录、源码容器及确认指纹解析 |
 | `qoj.py` | QOJ 页面解析、Cookie、源码提交和评测结果 |
 | `downloads.py` | 附件原始字节流、文件名及下载响应头转发 |
 | `teams.py` | 队伍、设备权限、三设备名额及加入码持久化 |
+| `joint_vp.py` | 多队联合准备、授权、并发启动与状态核查 |
+| `joint_entry.py` | 只读准备原生 VP 报名表单及授权后的单次开赛 |
 | `printing.py` | 每轮 VP 的虚拟打印文件、额度及隔离存储 |
 | `statements.py` | PDF 题面来源校验、文件类型验证与流式显示 |
 | `storage.py` | SQLite 持久化及 ICPC 计分 |

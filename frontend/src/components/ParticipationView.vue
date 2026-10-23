@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue';
 import { useContest } from '../composables/useContest.js';
 import { dateTime } from '../lib/format.js';
+import JointVPPanel from './JointVPPanel.vue';
 
 const c = useContest();
 const selectedMode = ref('vp');
@@ -9,6 +10,7 @@ const selectedAction = ref('');
 const fieldValues = ref(Object.create(null));
 const refreshing = ref(false);
 const demoStarting = ref(false);
+const jointLocked = ref(false);
 const teamName = ref('My Team');
 const teamNameInput = ref(null);
 const mode = computed(() => c.part?.mode === 'official' ? 'official' : 'vp');
@@ -84,7 +86,7 @@ const demoLabel = computed(() => c.state?.run ? '重新开始离线演示' : '�
 const enterTab = computed(() => c.can('manage') ? 'overview' : 'problems');
 
 function changeMode() {
-  if (!c.can('manage') || c.state?.demo || c.participationChanging
+  if (!c.can('manage') || c.state?.demo || c.participationChanging || jointLocked.value
     || !['vp', 'official'].includes(selectedMode.value)) return;
   c.updateParticipation('/api/mode', { mode: selectedMode.value });
 }
@@ -101,7 +103,7 @@ async function refresh() {
 }
 
 function startNative() {
-  if (!c.hasTeam || !c.can('manage') || c.state?.demo || c.participationChanging || !action.value || !c.state?.user?.authenticated) return;
+  if (!c.hasTeam || !c.can('manage') || c.state?.demo || c.participationChanging || jointLocked.value || !action.value || !c.state?.user?.authenticated) return;
   const selection = Object.create(null);
   for (const field of fields.value) {
     selection[field.name] = field.type === 'checkbox' ? fieldValues.value[field.name] === true
@@ -147,7 +149,7 @@ async function submitDemo() {
         <div class="participation-mode-row">
           <label for="participation-mode">参赛模式</label>
           <select id="participation-mode" v-model="selectedMode"
-                  :disabled="!c.can('manage') || c.participationChanging || !!c.state?.demo" @change="changeMode">
+                  :disabled="!c.can('manage') || c.participationChanging || jointLocked || !!c.state?.demo" @change="changeMode">
             <option value="vp">QOJ 虚拟参赛（VP）</option>
             <option value="official">QOJ 正式比赛</option>
           </select>
@@ -196,11 +198,13 @@ async function submitDemo() {
             </div>
           </div>
           <button id="participation-start-button" type="submit" class="button button-primary"
-                  :disabled="!c.hasTeam || c.participationChanging || !c.can('manage') || !action || !c.state?.user?.authenticated">{{ startLabel }}</button>
+                  :disabled="!c.hasTeam || c.participationChanging || jointLocked || !c.can('manage') || !action || !c.state?.user?.authenticated">{{ startLabel }}</button>
+          <p v-if="jointLocked" class="field-help">联合 VP 已准备、正在启动或等待核查，请在下方联合 VP 面板处理。</p>
         </form>
         <div id="participation-error" class="inline-error" role="alert" :hidden="!c.participationError">{{ c.participationError }}</div>
       </div>
     </section>
+    <JointVPPanel v-if="c.hasTeam && !c.state?.demo && mode === 'vp'" @locked="jointLocked = $event" />
     <section id="start-panel" class="start-panel" :hidden="!c.hasTeam || !c.state?.demo || c.running || !c.can('manage') || mode === 'official'">
       <div><h2>{{ demoLabel }}</h2><p class="muted">演示计时开始后显示模拟比赛内容。</p></div>
       <form id="start-form" @submit.prevent="submitDemo">

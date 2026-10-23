@@ -491,6 +491,7 @@ class QOJClient:
         self.lock = threading.RLock()
         self.authenticated = False
         self.username = ""
+        self.show_unofficial = None
         self._cooldown_until = 0.0
         self._vp_entry_pages = {}
 
@@ -516,6 +517,22 @@ class QOJClient:
             self.clear()
             for name, morsel in cookie.items():
                 self.session.cookies.set(name, morsel.value, domain="qoj.ac", path="/", secure=True)
+
+    def _apply_standings_preference(self):
+        """Mirror QOJ's Show unofficial checkbox before preparing a request.
+
+        Checked removes this cookie; unchecked stores an empty value at
+        /contest. QOJ then selects the participants and computes their ranks.
+        A startup override must also survive Cookie imports and redirects.
+        """
+        if self.show_unofficial is None:
+            return
+        name = "show_unofficial_mode"
+        for cookie in list(self.session.cookies):
+            if cookie.name == name and cookie.domain.lstrip(".").lower() == "qoj.ac":
+                self.session.cookies.clear(cookie.domain, cookie.path, cookie.name)
+        if self.show_unofficial is False:
+            self.session.cookies.set(name, "", domain="qoj.ac", path="/contest", secure=True)
 
     def fetch(self, method: str, path: str, **kwargs) -> requests.Response:
         method = method.upper()
@@ -543,6 +560,7 @@ class QOJClient:
                     limited = QOJError("QOJ 请求正在限流冷却，稍后会自动重试。", 429)
                     limited.retry_after = max(1, math.ceil(remaining))
                     raise limited
+                self._apply_standings_preference()
                 try:
                     response = self.session.request(method, url, headers=headers, allow_redirects=False, **kwargs)
                 except requests.RequestException:

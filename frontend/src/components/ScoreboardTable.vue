@@ -1,11 +1,13 @@
 <script setup>
 import { computed } from 'vue';
 import { useContest } from '../composables/useContest.js';
-import { scoreboardCell, scoreboardProblemTotals } from '../lib/scoreboard.js';
+import { ccpcDisplay, scoreboardCell, scoreboardProblemTotals } from '../lib/scoreboard.js';
 import ProblemLetter from './ProblemLetter.vue';
+import CCPCScoreboardTable from './CCPCScoreboardTable.vue';
 
-const props = defineProps({ rows: { type: Array, default: () => [] } });
+const props = defineProps({ rows: { type: Array, default: () => [] }, privateView: { type: Boolean, default: false } });
 const c = useContest();
+const ccpc = computed(() => !props.privateView && !!ccpcDisplay(c));
 const totals = computed(() => scoreboardProblemTotals(c));
 const tableRows = computed(() => !c.canRead ? [] : props.rows.map((row) => ({
   row,
@@ -18,7 +20,8 @@ const problemHref = (problem) => `#problems/${encodeURIComponent(problem.id)}`;
 </script>
 
 <template>
-  <table v-if="c.canRead" class="scoreboard-table">
+  <CCPCScoreboardTable v-if="c.canRead && ccpc" :rows="rows" />
+  <table v-else-if="c.canRead" class="scoreboard-table">
     <thead>
       <tr>
         <th>Rank</th><th>Team</th><th>Solved</th><th>Penalty</th>

@@ -18,8 +18,11 @@ from flask import Flask, Response, g, jsonify, request, send_file, send_from_dir
 from werkzeug.exceptions import HTTPException
 
 from cli_auth import CLIAuthError, CLITokenStore
+from ccpc import CCPCConfig, CCPCScoreboard
 from demo import DemoClient
 from downloads import attachment_response
+from joint_entry import authorize_entry, prepare_entry
+from joint_vp import JointVPError, JointVPService
 from printing import MAX_PRINT_SIZE, MAX_RUN_BYTES, MAX_RUN_FILES, PrintError, PrintStore, render_print
 from qoj import QOJClient, QOJError, rewrite_proxy
 from storage import Store, score
@@ -35,7 +38,8 @@ class AppError(Exception):
         self.status = status
 
 
-def create_app(contest_id=1802, demo=False, duration_minutes=None, data_dir=None, client_factory=None, freeze_minutes=0, mode="vp", scoreboard="auto"):
+def create_app(contest_id=1802, demo=False, duration_minutes=None, data_dir=None, client_factory=None, freeze_minutes=0, mode="vp", scoreboard="auto", show_unofficial=None,
+               scoreboard_style="standard", ccpc_unlock=None, ccpc_unlock_overrides=None, ccpc_reveal_after=None):
     if isinstance(contest_id, bool) or not isinstance(contest_id, int) or contest_id < 1:
         raise ValueError("contest_id 必须是正整数")
     if duration_minutes is not None and not 1 <= duration_minutes <= 10080:
@@ -48,6 +52,10 @@ def create_app(contest_id=1802, demo=False, duration_minutes=None, data_dir=None
         raise ValueError("真实比赛的时间与封榜由 QOJ 决定，不能在本地覆盖。")
     if scoreboard not in {"auto", "pc2"}:
         raise ValueError("scoreboard 必须为 auto 或 pc2")
+    if show_unofficial is not None and not isinstance(show_unofficial, bool):
+        raise ValueError("show_unofficial 必须为布尔值或 None")
+    ccpc_config = CCPCConfig(style=scoreboard_style, unlock=ccpc_unlock,
+                             overrides=ccpc_unlock_overrides, reveal_after=ccpc_reveal_after)
     data_dir = Path(data_dir or ROOT / ".data")
     data_dir.mkdir(parents=True, exist_ok=True)
     secret_path = data_dir / "server-secret.key"
@@ -71,6 +79,8 @@ def create_app(contest_id=1802, demo=False, duration_minutes=None, data_dir=None
     app.extensions["teams"] = teams
     app.extensions["cli_tokens"] = cli_tokens
     app.extensions["prints"] = prints
+    ccpc_board = CCPCScoreboard(data_dir / "vp.sqlite3", ccpc_config, app.config["SECRET_KEY"]) if scoreboard_style == "ccpc" else None
+    app.extensions["ccpc_scoreboard"] = ccpc_board
     contest_key = ("demo:" if demo else "qoj:") + str(contest_id)
     factory = client_factory or (DemoClient if demo else QOJClient)
     clients = {}
@@ -78,6 +88,69 @@ def create_app(contest_id=1802, demo=False, duration_minutes=None, data_dir=None
     app.extensions["clients"] = clients
     statement_cache = StatementPDFCache()
     app.extensions["statement_cache"] = statement_cache
+
+    def joint_runtime(team_id, owner_sid):
+        """Resolve an authorized captain outside any browser/request context."""
+        team = teams.access(owner_sid, contest_key)
+        if not team or team["id"] != team_id or team["role"] != "captain":
+            raise AppError("队长身份已失效，请重新加入联合 VP。", 403)
+        with registry_lock:
+            rt = clients.get(owner_sid)
+        if rt is None:
+            raise AppError("请由队长重新连接 QOJ，并重新准备。", 409)
+        return rt
+
+    def joint_check_account(rt, owner_sid, expected=None):
+        client = rt["client"]
+        if store.participation_mode(owner_sid, contest_key, mode) != "vp":
+            raise AppError("联合 VP 仅支持虚拟参赛，请切换为 VP 后重新准备。", 409)
+        if not client.authenticated or not client.username:
+            raise AppError("QOJ 登录已失效，请由队长重新连接并准备。", 401)
+        if expected is not None and client.username != expected:
+            raise AppError("QOJ 账号发生变化，请重新准备。", 409)
+
+    def joint_observe(team_id, owner_sid):
+        rt = joint_runtime(team_id, owner_sid)
+        with rt["client"].lock:
+            joint_check_account(rt, owner_sid)
+            username = rt["client"].username
+            snapshot = rt["client"].participation(contest_id, "vp")
+            joint_check_account(rt, owner_sid, username)
+            return {**{key: snapshot.get(key) for key in ("status", "started_at", "ends_at", "message", "entry_uncertain")},
+                    "authenticated": True, "username": username, "mode": snapshot.get("mode", "vp")}
+
+    def joint_prepare(team_id, owner_sid):
+        rt = joint_runtime(team_id, owner_sid)
+        with rt["client"].lock:
+            joint_check_account(rt, owner_sid)
+            username = rt["client"].username
+            plan = prepare_entry(rt["client"], contest_id)
+            joint_check_account(rt, owner_sid, username)
+            return plan
+
+    def joint_launch(team_id, owner_sid, grant):
+        rt = joint_runtime(team_id, owner_sid)
+        with rt["client"].lock:
+            joint_check_account(rt, owner_sid, grant["username"])
+            try:
+                snapshot = authorize_entry(rt["client"], contest_id, grant["fingerprint"],
+                                           grant["action"], grant["values"])
+                joint_check_account(rt, owner_sid, grant["username"])
+                if snapshot.get("entry_uncertain"):
+                    rt["entry_notice"] = ("vp", grant["username"], snapshot.get("message", "请刷新核查参赛状态。"))
+                return snapshot
+            finally:
+                # Normal /api/state still owns the clock, standings and local run.
+                rt.update(loaded=False, contest=None, problems={})
+                statement_cache.invalidate(owner_sid)
+
+    joint_vp = JointVPService(data_dir / "vp.sqlite3", contest_key,
+                              joint_observe, joint_prepare, joint_launch)
+    app.extensions["joint_vp"] = joint_vp
+
+    def guard_joint_mutation(*, start=False):
+        if g.team and g.role == "captain":
+            joint_vp.guard_mutation(g.team, start=start)
 
     def runtime():
         cli = getattr(g, "cli", None)
@@ -101,6 +174,7 @@ def create_app(contest_id=1802, demo=False, duration_minutes=None, data_dir=None
             if sid not in clients:
                 client = factory()
                 client.scoreboard_mode = scoreboard
+                client.show_unofficial = show_unofficial
                 clients[sid] = {"client": client, "contest": None, "contest_error": None, "contest_error_status": None,
                                 "loaded": False, "problems": {}, "last_poll": 0}
             return clients[sid]
@@ -129,7 +203,8 @@ def create_app(contest_id=1802, demo=False, duration_minutes=None, data_dir=None
         if g.role in {"member", "revoked"}:
             common = (request.method in {"GET", "HEAD"} and request.path in {"/", "/healthz", "/api/state", "/api/team"}) or (request.method == "POST" and request.path == "/api/team/leave")
             readable = g.role == "member" and request.method in {"GET", "HEAD"} and (
-                re.fullmatch(r"/api/problems/\d+(?:/statement|/pdf/[a-f0-9]{24})?", request.path)
+                request.path == "/api/joint-vp"
+                or re.fullmatch(r"/api/problems/\d+(?:/statement|/pdf/[a-f0-9]{24})?", request.path)
                 or re.fullmatch(r"/api/prints(?:/[a-f0-9]{32}/(?:view|download))?", request.path)
                 or request.path.startswith("/qoj/"))
             if not common and not readable:
@@ -162,8 +237,12 @@ def create_app(contest_id=1802, demo=False, duration_minutes=None, data_dir=None
     @app.errorhandler(TeamError)
     @app.errorhandler(PrintError)
     @app.errorhandler(CLIAuthError)
+    @app.errorhandler(JointVPError)
     def known_error(exc):
-        return jsonify(error=str(exc)), exc.status
+        details = {"error": str(exc)}
+        if getattr(exc, "code", None):
+            details["code"] = exc.code
+        return jsonify(details), exc.status
 
     @app.errorhandler(HTTPException)
     def http_error(exc):
@@ -424,6 +503,62 @@ def create_app(contest_id=1802, demo=False, duration_minutes=None, data_dir=None
                         invalidate_native()
                         raise
 
+    def display_scoreboard(result, snapshot):
+        """Redact the public board after keeping only this team's private details."""
+        if ccpc_board is None:
+            return result
+        result["scoreboard_display"] = {"style": "ccpc"}
+        participant = result.get("participation")
+        # Never send raw header totals alongside anonymized cells. Revealed
+        # totals are computed over the same visible roster as the thresholds.
+        if participant is not None:
+            participant["scoreboard_problem_totals"] = {}
+        if (not snapshot.get("content_available")
+                or snapshot.get("status") not in {"running", "finished"}):
+            result["scoreboard"] = []
+            return result
+        if snapshot.get("scoreboard_available") is False:
+            result["scoreboard"] = []
+            return result
+        source = snapshot.get("scoreboard_source", "demo" if demo else "qoj")
+        visibility = show_unofficial
+        if source == "qoj" and show_unofficial is None:
+            cookies = getattr(getattr(g.runtime["client"], "session", None), "cookies", ())
+            visibility = sorted((cookie.domain, cookie.path, cookie.value) for cookie in cookies
+                                if cookie.name == "show_unofficial_mode")
+        scope = json.dumps([contest_key, g.owner_sid, snapshot.get("username"),
+                            snapshot.get("mode"), snapshot.get("started_at"), snapshot.get("ends_at"),
+                            source, visibility], ensure_ascii=True, separators=(",", ":"))
+        try:
+            projected = ccpc_board.project(
+                result["scoreboard"], result["contest"].get("problems", []), scope=scope,
+                now=result["server_time"], started_at=snapshot.get("started_at"),
+                finished=snapshot.get("status") == "finished", demo=demo,
+                freeze_at=snapshot.get("scoreboard_freeze_at"),
+                frozen=snapshot.get("scoreboard_frozen") is True,
+                ruleset=snapshot.get("ruleset"), source=source,
+                published_totals=snapshot.get("scoreboard_problem_totals"),
+            )
+        except ValueError as exc:
+            # Invalid configuration/data must not fall back to the original
+            # unredacted table. The rest of participation remains usable.
+            result["scoreboard"] = []
+            result["scoreboard_display"]["error"] = str(exc)
+            if participant is not None:
+                participant.update(scoreboard_available=False, scoreboard_status="error",
+                                   scoreboard_message="CCPC 榜单无法显示：" + str(exc))
+            else:
+                result["scoreboard_message"] = "CCPC 榜单无法显示：" + str(exc)
+            return result
+        result["scoreboard"] = projected["rows"]
+        result["scoreboard_display"] = projected["meta"]
+        if participant is not None:
+            participant["scoreboard_problem_totals"] = {
+                str(problem["id"]): {"solved": problem["solved"], "submissions": problem["submissions"]}
+                for problem in projected["meta"]["revealed_problems"]
+            }
+        return result
+
     def state():
         rt = g.runtime
         can_manage = g.role in {"solo", "captain"}
@@ -454,12 +589,13 @@ def create_app(contest_id=1802, demo=False, duration_minutes=None, data_dir=None
                            problem_stats=own_row.get("problem_stats", {}))
             participant = {k: v for k, v in snapshot.items() if k not in {"contest", "scoreboard", "error_status"}}
             allowed = can_manage and snapshot.get("can_submit", False) and run is not None
-            return {"csrf_token": csrf_token, "demo": False, "server_time": snapshot.get("server_time") or time.time(),
+            result = {"csrf_token": csrf_token, "demo": False, "server_time": snapshot.get("server_time") or time.time(),
                     "contest": contest if can_manage else {k: v for k, v in contest.items() if k != "attachments"},
                     "contest_error": rt["contest_error"], "user": {"authenticated": rt["client"].authenticated,
                     "username": rt["client"].username}, "run": run, "submissions": submissions if can_manage else [],
                     "scoreboard": board, "participation": participant, "poll_interval": 8, "team": public_team(),
                     "permissions": {"manage": can_manage, "submit": allowed, "print": allowed, "view_content": visible}}
+            return display_scoreboard(result, snapshot)
         contest = load_contest() or {"id": contest_id, "title": f"QOJ Contest #{contest_id}",
                                    "duration_seconds": (duration_minutes or 300) * 60, "problems": []}
         run = current_run()
@@ -477,7 +613,7 @@ def create_app(contest_id=1802, demo=False, duration_minutes=None, data_dir=None
         freeze_status = ("frozen" if own_row and own_row.get("frozen") else
                          "unfrozen" if unfreeze_at is not None and time.time() >= unfreeze_at else
                          "scheduled" if freeze_at is not None else "disabled")
-        return {"csrf_token": csrf_token, "demo": demo, "server_time": time.time(),
+        result = {"csrf_token": csrf_token, "demo": demo, "server_time": time.time(),
                 "contest": contest if can_manage else {k: v for k, v in contest.items() if k != "attachments"}, "contest_error": rt["contest_error"],
                 "user": {"authenticated": rt["client"].authenticated, "username": rt["client"].username},
                 "run": run, "submissions": submissions if can_manage else [],
@@ -487,6 +623,12 @@ def create_app(contest_id=1802, demo=False, duration_minutes=None, data_dir=None
                                       "configured_minutes": freeze_minutes, "auto_unfreeze": True},
                 "poll_interval": 8, "team": public_team(),
                 "permissions": {"manage": can_manage, "submit": can_manage, "print": can_manage, "view_content": True}}
+        return display_scoreboard(result, {
+            "mode": "vp", "username": rt["client"].username, "content_available": run is not None,
+            "status": run["status"] if run else "unregistered", "ruleset": "ICPC", "scoreboard_source": "demo",
+            "started_at": run["started_at"] if run else None, "ends_at": run["ends_at"] if run else None,
+            "scoreboard_freeze_at": freeze_at, "scoreboard_frozen": freeze_status == "frozen",
+        })
 
     @app.get("/")
     def index():
@@ -504,6 +646,41 @@ def create_app(contest_id=1802, demo=False, duration_minutes=None, data_dir=None
     @app.get("/api/team")
     def get_team():
         return jsonify(team=public_team())
+
+    @app.get("/api/joint-vp")
+    def get_joint_vp():
+        if demo or not g.team or g.role not in {"captain", "member"}:
+            return jsonify(joint_vp=None)
+        return jsonify(joint_vp=joint_vp.view(g.team, captain=g.role == "captain")["room"])
+
+    @app.post("/api/joint-vp/<operation>")
+    def change_joint_vp(operation):
+        body = payload()
+        if demo:
+            raise AppError("联合 VP 用于 QOJ 原生参赛，离线演示不启动上游。", 409)
+        if not g.team or g.role != "captain" or g.team["owner_sid"] != g.owner_sid:
+            raise AppError("请先创建队伍；联合 VP 操作须由队长完成。", 403)
+        if operation in {"create", "join", "prepare", "ready", "start"} and participation_mode() != "vp":
+            raise AppError("联合 VP 仅支持虚拟参赛，请先切换参赛模式。", 409)
+        actions = {
+            "create": lambda: joint_vp.create(g.team),
+            "join": lambda: joint_vp.join(g.team, body.get("code")),
+            "prepare": lambda: joint_vp.prepare(g.team),
+            "unready": lambda: joint_vp.unready(g.team),
+            "start": lambda: joint_vp.start(g.team),
+            "refresh": lambda: joint_vp.refresh(g.team),
+            "leave": lambda: joint_vp.leave(g.team),
+            "cancel": lambda: joint_vp.cancel(g.team),
+        }
+        if operation == "ready":
+            if body.get("consent") is not True:
+                raise AppError("请确认报名选项并授权组织者启动本次 VP。", 400)
+            result = joint_vp.ready(g.team, body.get("fingerprint"), body.get("action"), body.get("values"))
+        elif operation in actions:
+            result = actions[operation]()
+        else:
+            raise AppError("未知的联合 VP 操作。", 404)
+        return jsonify(joint_vp=result["room"]), 202 if operation == "start" else 200
 
     def require_cli_captain():
         if not g.team or g.role != "captain" or g.team["owner_sid"] != g.owner_sid:
@@ -570,6 +747,8 @@ def create_app(contest_id=1802, demo=False, duration_minutes=None, data_dir=None
     @app.post("/api/team/dissolve")
     def dissolve_team():
         payload()
+        if g.team and g.role == "captain":
+            joint_vp.detach(g.team)
         teams.dissolve(session["sid"], contest_key)
         return rebound_state()
 
@@ -587,6 +766,7 @@ def create_app(contest_id=1802, demo=False, duration_minutes=None, data_dir=None
         if demo and selected != "vp":
             raise AppError("离线演示仅提供 VP 示例。", 409)
         with g.runtime["client"].lock:
+            guard_joint_mutation()
             store.set_participation_mode(g.owner_sid, contest_key, selected)
             invalidate_native()
             return jsonify(state())
@@ -600,6 +780,7 @@ def create_app(contest_id=1802, demo=False, duration_minutes=None, data_dir=None
         if not isinstance(cookie, str) or not cookie.strip() or len(cookie) > 16384:
             raise AppError("请输入有效的 QOJ Cookie（最多 16 KB）。")
         with g.runtime["client"].lock:
+            guard_joint_mutation()
             g.runtime["client"].import_cookies(cookie)
             invalidate_native()
             load_contest(force=True)
@@ -610,6 +791,7 @@ def create_app(contest_id=1802, demo=False, duration_minutes=None, data_dir=None
     @app.post("/api/logout")
     def logout():
         with g.runtime["client"].lock:
+            guard_joint_mutation()
             g.runtime["client"].clear()
             invalidate_native()
             g.runtime.update(loaded=False, contest=None, contest_error=None, problems={})
@@ -622,6 +804,7 @@ def create_app(contest_id=1802, demo=False, duration_minutes=None, data_dir=None
             raise AppError("队名长度须为 1–80 个字符。")
         with g.runtime["client"].lock:
             if not demo:
+                guard_joint_mutation(start=True)
                 if reset:
                     raise AppError("原生参赛不能在本地重新计时；请使用 QOJ 提供的参赛操作。", 409)
                 selected = body.get("mode", participation_mode())
@@ -659,6 +842,16 @@ def create_app(contest_id=1802, demo=False, duration_minutes=None, data_dir=None
                 if participant.get("status") not in {"scheduled", "running", "finished"}:
                     message = participant.get("message") or "QOJ 尚未确认开始参赛，请刷新状态核查。"
                     return jsonify(error=message, state=updated), 409
+                if selected == "vp" and g.team:
+                    try:
+                        if joint_vp.view(g.team, captain=True)["room"]:
+                            joint_vp.refresh(g.team, snapshot={**participant,
+                                "authenticated": g.runtime["client"].authenticated,
+                                "username": g.runtime["client"].username})
+                    except JointVPError:
+                        # The group may have been cancelled during native entry.
+                        # Its roster must not turn a confirmed QOJ start into an error.
+                        pass
                 return jsonify(updated)
             contest = require_contest()
             if not g.runtime["client"].authenticated:
@@ -976,6 +1169,8 @@ def create_app(contest_id=1802, demo=False, duration_minutes=None, data_dir=None
         if parsed.query:
             headers["Referer"] += "?" + parsed.query
         with g.runtime["client"].lock:
+            if request.method == "POST" or urlsplit(target).path.rstrip("/") in {"/login", "/logout"}:
+                guard_joint_mutation(start=request.method == "POST" and urlsplit(target).path.startswith("/contest/"))
             options = ({"url_guard": member_resource} if g.role == "member" else
                        {"url_guard": login_resource} if authentication_asset else {})
             upstream = g.runtime["client"].fetch(request.method, target, headers=headers,
@@ -1008,6 +1203,13 @@ def main():
     parser.add_argument("--port", default=8080, type=int)
     parser.add_argument("--mode", choices=("vp", "official"), default="vp", help="默认参赛模式：vp 或 official（正式比赛）；也可在页面选择")
     parser.add_argument("--scoreboard", choices=("auto", "pc2"), default="auto", help="榜单来源：自动跟随 QOJ 入口，或指定 Training Mode 的 PC2 results 页面")
+    parser.add_argument("--show-unofficial", action=argparse.BooleanOptionalAction, default=None,
+                        help="显示非正式参赛者；--no-show-unofficial 隐藏，指定时优先原生榜单，不指定则保持原有行为")
+    parser.add_argument("--scoreboard-style", choices=("standard", "ccpc"), default="standard",
+                        help="榜单展示：standard 为普通榜单，ccpc 按通过队伍数逐步揭晓题号")
+    parser.add_argument("--ccpc-unlock", type=int, help="CCPC 每题默认揭晓阈值（不同通过队伍数，0 表示立即公开）")
+    parser.add_argument("--ccpc-unlock-overrides", help="CCPC 单题阈值，例如 A=10,C=20；题号区分大小写")
+    parser.add_argument("--ccpc-reveal-after", type=int, help="从 QOJ 本队开赛起多少分钟公开全部题号，仅控制题号，不改变封榜")
     parser.add_argument("--duration", type=int, help="仅离线演示：指定演示时长（分钟）")
     parser.add_argument("--data-dir", default=str(ROOT / ".data"), help="SQLite 和本地会话签名密钥目录")
     parser.add_argument("--secure-cookie", action="store_true", help="在 HTTPS 部署时启用 Secure Cookie")
@@ -1022,7 +1224,16 @@ def main():
         parser.error("--duration 必须在 1–10080 分钟之间。")
     if not args.demo and args.duration is not None:
         parser.error("真实参赛的赛长由 QOJ 决定，--duration 仅用于 --demo。")
-    app = create_app(args.contest or 1, args.demo, args.duration, args.data_dir, mode=args.mode, scoreboard=args.scoreboard)
+    try:
+        CCPCConfig(style=args.scoreboard_style, unlock=args.ccpc_unlock,
+                   overrides=args.ccpc_unlock_overrides, reveal_after=args.ccpc_reveal_after)
+    except ValueError as exc:
+        parser.error(str(exc))
+    ccpc_options = ({"scoreboard_style": args.scoreboard_style, "ccpc_unlock": args.ccpc_unlock,
+                     "ccpc_unlock_overrides": args.ccpc_unlock_overrides, "ccpc_reveal_after": args.ccpc_reveal_after}
+                    if args.scoreboard_style == "ccpc" else {})
+    app = create_app(args.contest or 1, args.demo, args.duration, args.data_dir, mode=args.mode,
+                     scoreboard=args.scoreboard, show_unofficial=args.show_unofficial, **ccpc_options)
     app.config["SESSION_COOKIE_SECURE"] = args.secure_cookie
     from waitress import serve
     print(f"QOJ VP: http://{'127.0.0.1' if args.host == '0.0.0.0' else args.host}:{args.port}", flush=True)

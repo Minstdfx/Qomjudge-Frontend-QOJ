@@ -204,7 +204,10 @@ def main():
             assert not page.locator("#scoreboard-original").get_attribute("href")
             for private in ("Private contest for account-b", PRIVATE_PROBLEM, PRIVATE_STANDING):
                 assert private not in page.locator("body").inner_text()
-            assert requests[before:] == [("POST", "/api/logout"), ("GET", "/api/state")]
+            # Returning to Contest may also read the local joint-VP panel.
+            # Account verification still consists of one logout and one state GET.
+            account_requests = [item for item in requests[before:] if item != ("GET", "/api/joint-vp")]
+            assert account_requests == [("POST", "/api/logout"), ("GET", "/api/state")], requests[before:]
 
             page.locator("#cookie-input").fill("fixture=account-a")
             page.locator("#connect-button").click()

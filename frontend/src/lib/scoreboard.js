@@ -1,22 +1,43 @@
+export function ccpcDisplay(c) {
+  return c.canRead && c.state?.scoreboard_display?.style === 'ccpc' ? c.state.scoreboard_display : null;
+}
+
 // Keep QOJ's published values intact: the display format also carries frozen results.
 export function scoreboardResult(c) {
   if (!c.canRead) return { rows: [], message: '' };
   const part = c.part || {};
-  const message = typeof part.scoreboard_message === 'string' ? part.scoreboard_message
+  const sourceMessage = typeof part.scoreboard_message === 'string' ? part.scoreboard_message
     : typeof c.state?.scoreboard_message === 'string' ? c.state.scoreboard_message : '';
+  const ccpc = ccpcDisplay(c);
+  const message = [...new Set([sourceMessage, ccpc?.message].filter((item) => typeof item === 'string' && item))].join('\n');
   if (c.scoreboardError) return { error: c.scoreboardError };
+  if (ccpc?.error) return { error: typeof ccpc.error === 'string' ? ccpc.error : '无法生成 CCPC 榜单，请刷新重试。' };
   if (part.scoreboard_available === false || ['unavailable', 'error'].includes(part.scoreboard_status)) {
     return { error: message || 'QOJ 暂未返回可读取的榜单，请刷新重试。' };
   }
   const record = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
   const scalar = (value) => value == null || typeof value === 'string'
     || typeof value === 'number' && Number.isFinite(value);
+  const count = (value) => Number.isSafeInteger(value) && value >= 0;
+  const validCCPCCell = (cell) => record(cell) && typeof cell.key === 'string'
+    && ['accepted', 'wrong', 'pending', 'neutral'].includes(cell.status)
+    && typeof cell.display === 'string' && typeof cell.revealed === 'boolean'
+    && (cell.first_blood == null || typeof cell.first_blood === 'boolean')
+    && (cell.revealed ? scalar(cell.problem_id) && cell.problem_id != null && typeof cell.label === 'string'
+      : cell.problem_id == null && cell.label == null);
+  const validCCPC = !ccpc || Array.isArray(ccpc.revealed_problems)
+    && ccpc.revealed_problems.every((problem) => record(problem) && scalar(problem.id) && problem.id != null
+      && typeof problem.label === 'string' && scalar(problem.title) && count(problem.threshold)
+      && (problem.solved == null || count(problem.solved))
+      && (problem.submissions == null || count(problem.submissions)))
+    && count(ccpc.hidden_count) && typeof ccpc.all_revealed === 'boolean';
   const validRow = (row) => record(row)
     && ['rank', 'team_name', 'username', 'solved', 'penalty'].every((key) => scalar(row[key]))
-    && (row.problem_stats == null || record(row.problem_stats)
-      && Object.values(row.problem_stats).every((cell) => record(cell) && scalar(cell.display) && scalar(cell.text)));
+    && (ccpc ? row.problem_stats == null && Array.isArray(row.ccpc_cells) && row.ccpc_cells.every(validCCPCCell)
+      : row.problem_stats == null || record(row.problem_stats)
+        && Object.values(row.problem_stats).every((cell) => record(cell) && scalar(cell.display) && scalar(cell.text)));
   const rows = c.state?.scoreboard;
-  if (!Array.isArray(rows) || !rows.every(validRow)) {
+  if (!validCCPC || !Array.isArray(rows) || !rows.every(validRow)) {
     return { error: '服务器返回的榜单格式不正确，请刷新重试。' };
   }
   return { rows, message };
@@ -44,6 +65,19 @@ export function scoreboardProblemTotals(c) {
   const result = scoreboardResult(c);
   if (!c.canRead || result.error) return {};
   const count = (value) => Number.isSafeInteger(value) && value >= 0 ? value : null;
+  const ccpc = ccpcDisplay(c);
+  if (ccpc) {
+    // Never reconstruct public problem totals from a team's private results.
+    const revealed = new Map(ccpc.revealed_problems.map((problem) => [String(problem.id), problem]));
+    return Object.fromEntries(c.problems.map((problem) => {
+      const total = revealed.get(String(problem.id));
+      return [problem.id, total ? {
+        solved: total.solved ?? null, submissions: total.submissions ?? null,
+        text: `${total.solved ?? '—'} / ${total.submissions ?? '—'}`,
+        title: `通过队伍数 / 提交次数：${total.solved ?? '未知'} / ${total.submissions ?? '未知'}（已揭晓题目）`,
+      } : { solved: null, submissions: null, text: '未揭晓', title: '此题尚未揭晓，不展示全场统计。' }];
+    }));
+  }
   const published = c.part?.scoreboard_problem_totals;
   const totals = {};
   for (const problem of c.problems) {

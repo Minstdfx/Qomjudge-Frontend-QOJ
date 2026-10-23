@@ -128,10 +128,16 @@ def _standings_link(source, contest_id, page_url):
 def read_scoreboard(client, page, contest_id, problems):
     """Follow the current authorized page's scoreboard; no public-board fallback."""
     expected_username = client.username
+    show_unofficial = getattr(client, "show_unofficial", None)
+    native_url = _standings_link(page.text, contest_id, page.url)
     source_url = (_results_link(page.text, contest_id, page.url)
-                  or _standings_link(page.text, contest_id, page.url))
+                  or native_url)
     if getattr(client, "scoreboard_mode", "auto") == "pc2":
         source_url = f"https://qoj.ac/results/QOJ{contest_id}?mode=pc2"
+    # Only the native standings honor QOJ's Show unofficial preference. An
+    # explicit startup choice takes priority over alternate results views.
+    if show_unofficial is not None and native_url:
+        source_url = native_url
     if not source_url:
         return {"scoreboard": [], "scoreboard_available": False, "scoreboard_status": "unavailable",
                 "scoreboard_message": "QOJ 当前未提供榜单入口。", "scoreboard_url": None}
@@ -151,7 +157,11 @@ def read_scoreboard(client, page, contest_id, problems):
         if target is None:
             if not _standings_url(board.url, contest_id):
                 raise QOJError("QOJ 未返回当前比赛的榜单页面。", 502)
-            target = _results_link(board.text, contest_id, board.url)
+            # Keep native data despite an alternative External Standings link.
+            # An embedded/redirected results view is still authoritative (e.g.
+            # Training Mode); it must not be bypassed to read hidden scores.
+            target = _results_link(board.text, contest_id, board.url,
+                                   embedded_only=show_unofficial is not None)
             if target:
                 result.update(scoreboard_url=target, scoreboard_source=source_kind(target))
                 board = client._page(target)
@@ -177,9 +187,15 @@ def read_scoreboard(client, page, contest_id, problems):
             parsed = parse_scoreboard(board.text, contest_id, problems, expected_username)
         messages = {"qoj-pc2": "QOJ PC2 / Training Mode 榜单",
                     "qoj-external": "QOJ External Standings", "qoj": "QOJ 原生榜单"}
+        message = messages[result["scoreboard_source"]]
+        if show_unofficial is not None:
+            if result["scoreboard_source"] == "qoj":
+                message += " · " + ("显示非正式参赛者" if show_unofficial else "隐藏非正式参赛者")
+            else:
+                message += "；此上游榜单不支持 Show unofficial 筛选，仍显示原榜。"
         result.update(scoreboard=parsed["rows"], scoreboard_available=True, scoreboard_status="available",
                       scoreboard_problem_totals=parsed.get("problem_totals", {}),
-                      scoreboard_message=messages[result["scoreboard_source"]],
+                      scoreboard_message=message,
                       ruleset=parsed["ruleset"], finalized=parsed.get("finalized"))
     except QOJError as exc:
         if exc.status in (401, 409):
@@ -707,6 +723,34 @@ def _page_mode(soup):
     return None
 
 
+def _scoreboard_freeze_after(source):
+    """Read QOJ's explicit relative freeze rule from the system sidebar.
+
+    Markup observed at https://contest.ucup.ac/contest/2567 on 2026-10-23
+    (QOJ 4.5.47): ``Scoreboard will be frozen after 4:00:00``. This is
+    elapsed contest time, so it can be anchored to the current participant's
+    official/virtual start instead of the historical contest schedule.
+    Unknown/localized wording remains unknown; neither pending cells nor
+    ``finalized`` establish when the current participant enters the freeze.
+    """
+    soup = BeautifulSoup(source, "html.parser")
+    durations = set()
+    for node in soup.select(".uoj-content > .row > .col-sm-3 > ul.list-group > li.list-group-item"):
+        if (node.find_parent(["article", "form", "table", "pre", "code"])
+                or node.find_parent(class_="uoj-article")):
+            continue
+        text = " ".join(node.get_text(" ", strip=True).split())
+        prefix = "Scoreboard will be frozen after"
+        if not text.startswith(prefix):
+            continue
+        match = re.fullmatch(re.escape(prefix) + r"\s+(\d{1,5}):([0-5]\d):([0-5]\d)", text)
+        if not match:
+            return None
+        hours, minutes, seconds = map(int, match.groups())
+        durations.add(hours * 3600 + minutes * 60 + seconds)
+    return durations.pop() if len(durations) == 1 else None
+
+
 def participation(client, contest_id, mode="vp"):
     if mode not in ("vp", "official"):
         raise QOJError("参赛模式必须是 vp 或 official。", 400)
@@ -742,6 +786,7 @@ def participation(client, contest_id, mode="vp"):
               "started_at": None, "ends_at": None, "username": client.username, "server_time": now,
               "actions": [form["public"] for form in forms], "contest": metadata,
               "scoreboard": [], "scoreboard_available": False, "scoreboard_message": "参赛开始前不读取榜单。",
+              "scoreboard_frozen": None, "scoreboard_freeze_at": None,
               "message": "尚未确认当前账号的 QOJ 原生参赛状态。", "upstream_url": f"https://qoj.ac/contest/{contest_id}"}
     if confirmation:
         result.update(entry_stage="confirmation", upstream_url=page.url,
@@ -794,6 +839,13 @@ def participation(client, contest_id, mode="vp"):
     if not contest["problems"]:
         result.update(content_available=False, can_submit=False, message="QOJ 尚未开放当前参赛账号的比赛题目。")
         return result
+    freeze_after = _scoreboard_freeze_after(page.text)
+    if freeze_after is not None and 0 <= freeze_after < ends - started:
+        result["scoreboard_freeze_at"] = started + freeze_after
+        # An ended participation does not prove that QOJ has released its
+        # scoreboard; leave the current frozen state unknown after the end.
+        if now < ends:
+            result["scoreboard_frozen"] = now >= result["scoreboard_freeze_at"]
     result.update(read_scoreboard(client, page, contest_id, contest["problems"]))
     return result
 

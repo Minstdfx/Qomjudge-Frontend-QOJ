@@ -70,7 +70,11 @@ export function createContestStore() {
       catch (error) { if (error.name === 'AbortError') throw error; throw new Error('无法连接服务器，请检查网络后重试。'); }
       let result;
       try { result = await response.json(); } catch { throw new Error(`服务器返回了无法读取的响应（HTTP ${response.status}）。`); }
-      if (!response.ok || result.error) throw new Error(result.error || `请求失败（HTTP ${response.status}）。`);
+      if (!response.ok || result.error) {
+        const failure = new Error(result.error || `请求失败（HTTP ${response.status}）。`);
+        failure.status = response.status; failure.code = result.code;
+        throw failure;
+      }
       return result;
     },
     adoptState(result) {
@@ -129,6 +133,9 @@ export function createContestStore() {
         c.detailsCache.clear(); c.resourceRevision++;
         return result;
       } catch (error) {
+        // A joint-start guard rejects before touching the QOJ session.
+        // Preserve the connected account instead of presenting a false logout.
+        if (error.code === 'joint_vp_locked') throw error;
         // Cookie import can change the upstream session even if verification fails.
         // Never restore the previous account's cached contest after that failure.
         c.adoptState({

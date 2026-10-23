@@ -2,7 +2,7 @@
 import { computed, ref } from 'vue';
 import { useContest } from '../composables/useContest.js';
 import { duration } from '../lib/format.js';
-import { scoreboardResult } from '../lib/scoreboard.js';
+import { ccpcDisplay, scoreboardResult } from '../lib/scoreboard.js';
 import ProblemLetter from './ProblemLetter.vue';
 import ScoreboardTable from './ScoreboardTable.vue';
 import SubmissionTable from './SubmissionTable.vue';
@@ -14,9 +14,10 @@ const result = computed(() => scoreboardResult(c));
 const errorTitle = computed(() => `无法读取 ${c.state?.demo ? '演示榜单' : 'QOJ 榜单'}`);
 const teamRow = computed(() => {
   if (!c.canRead || result.value.error) return null;
-  return result.value.rows.find((row) => row.is_self === true)
+  const row = result.value.rows.find((row) => row.is_self === true)
     || (c.state?.demo && c.state.run ? { ...c.state.run, rank: '—',
       team_name: c.state.run.team_name || c.state.team?.name || 'My Team', is_self: true } : null);
+  return row && ccpcDisplay(c) ? { ...row, problem_stats: c.state?.run?.problem_stats || {} } : row;
 });
 const submissions = computed(() => [...(c.canRead ? c.state?.submissions || [] : [])]
   .sort((a, b) => Number(b.submitted_at) - Number(a.submitted_at) || Number(b.id) - Number(a.id)).slice(0, 10));
@@ -71,7 +72,7 @@ function finishDemo() {
       <div id="team-scoreboard" class="table-scroll">
         <template v-if="c.canRead">
           <div v-if="result.error" class="scoreboard-unavailable" role="status"><strong>{{ errorTitle }}</strong><p>{{ result.error }}</p></div>
-          <ScoreboardTable v-else-if="teamRow" :rows="[teamRow]" />
+          <ScoreboardTable v-else-if="teamRow" :rows="[teamRow]" private-view />
           <p v-else class="empty-state">QOJ 榜单暂无本队记录。</p>
         </template>
       </div>
